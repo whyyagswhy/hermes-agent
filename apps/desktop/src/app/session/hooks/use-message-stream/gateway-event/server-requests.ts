@@ -225,6 +225,17 @@ const sudo: Handler = ctx => {
   notifyInput(ctx, translateNow('notifications.native.inputBody'))
 }
 
+const displayInstallSudo: Handler = ctx => {
+  rememberServerRequest(ctx.request)
+  setSudoRequest({
+    description: translateNow('prompts.sudoInstallDesc'),
+    requestId: ctx.request.id,
+    sessionId: ctx.sessionId || null
+  })
+  markNeedsInput(ctx)
+  notifyInput(ctx, translateNow('prompts.sudoInstallDesc'))
+}
+
 const secret: Handler = ctx => {
   const p = ctx.request.params
   const envVar = str(p.env_var)
@@ -387,6 +398,7 @@ export const SERVER_REQUEST_HANDLERS: Record<string, Handler> = {
   'preview.read': previewRead,
   secret,
   sudo,
+  'display.install.sudo': displayInstallSudo,
   'terminal.read': terminalRead,
   tour,
   'vault.code': vaultCode,

@@ -112,6 +112,16 @@ server_request("sudo", params=SudoRequestParams, result=ValueResult,
                doc="Masked sudo password for the terminal tool.")
 
 
+class DisplayInstallSudoRequestParams(ServerRequestParams):
+    # Profile whose gateway host installs the Bot Screen packages (no session).
+
+    profile_key: str = ""
+
+
+server_request("display.install.sudo", params=DisplayInstallSudoRequestParams, result=ValueResult,
+               doc="Masked sudo password for a Bot Screen package install.")
+
+
 class SecretRequestParams(ServerRequestParams):
     env_var: str
     prompt: str
