@@ -46,10 +46,16 @@ def _screen_start(args) -> int:
 
 def _screen_stop(args) -> int:
     from tools.bot_desktop import runtime
+    # Release the human-exclusion lease only after a successful stop: if stop()
+    # raises (e.g. killpg PermissionError) the desktop may still be live with a
+    # human interacting, and an early release would hand automated control to
+    # the agent meanwhile. A clean False (nothing running) still releases, so
+    # the documented already-exited recovery keeps working.
+    stopped = runtime.stop()
     if runtime.is_supported_host():
         from tools.bot_desktop import lease
         lease.release()
-    print("Bot Desktop: stopped" if runtime.stop() else "Bot Desktop: was not running")
+    print("Bot Desktop: stopped" if stopped else "Bot Desktop: was not running")
     return 0
 
 
