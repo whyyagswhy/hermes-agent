@@ -22,15 +22,15 @@ vi.mock('./routing', () => ({
 import { isEventForBotScreen } from './screen-connection'
 
 const bot = { name: 'ops' } as RosterRow
+type BotEvent = Parameters<typeof isEventForBotScreen>[1]
 const key = '/home/hermes/.hermes'
 
 describe('isEventForBotScreen', () => {
   it('ignores a same-profile-path event that arrived from another host', () => {
     routeMock.mockReturnValue({ connectionId: 'conn-a', profile: 'ops' })
 
-    const fromB = { connectionId: 'conn-b', payload: { profile_key: key }, type: 'display.lease' }
-    const fromA = { connectionId: 'conn-a', payload: { profile_key: key }, type: 'display.lease' }
-
+    const fromB = { connectionId: 'conn-b', payload: { profile_key: key }, type: 'display.lease' } as unknown as BotEvent
+    const fromA = { connectionId: 'conn-a', payload: { profile_key: key }, type: 'display.lease' } as unknown as BotEvent
     expect(isEventForBotScreen(bot, fromB, key)).toBe(false)
     expect(isEventForBotScreen(bot, fromA, key)).toBe(true)
   })
@@ -38,7 +38,7 @@ describe('isEventForBotScreen', () => {
   it('still matches the untagged local socket for a local bot', () => {
     routeMock.mockReturnValue({ connectionId: 'local', profile: 'ops' })
 
-    expect(isEventForBotScreen(bot, { payload: { profile_key: key }, type: 'display.lease' }, key)).toBe(true)
-    expect(isEventForBotScreen(bot, { payload: { profile_key: '/other' }, type: 'display.lease' }, key)).toBe(false)
+    expect(isEventForBotScreen(bot, { payload: { profile_key: key }, type: 'display.lease' } as unknown as BotEvent, key)).toBe(true)
+    expect(isEventForBotScreen(bot, { payload: { profile_key: '/other' }, type: 'display.lease' } as unknown as BotEvent, key)).toBe(false)
   })
 })

@@ -94,7 +94,7 @@ it('applies lease events only from the owning host even when profile paths match
         connectionId,
         profile: 'default',
         payload: { profile_key: profileKey, lease: human }
-      })
+      } as unknown as Parameters<typeof emitGatewayEvent>[0])
     )
 
   emit('host-b')
