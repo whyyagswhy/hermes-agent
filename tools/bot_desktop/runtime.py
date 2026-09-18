@@ -14,10 +14,12 @@ Chromium spawns merge in so the agent acts on this profile's screen and nowhere 
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -99,6 +101,12 @@ class DesktopStatus:
 
 
 def _read(path: Path) -> Optional[str]:
+    """State files are plain regular files: a symlink or any other non-regular node reads as missing, so a redirected pid file can never name a stranger."""
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+    except OSError:
+        return None
     try:
         return path.read_text(encoding="utf-8").strip() or None
     except OSError:
@@ -115,7 +123,63 @@ def _launcher_pid() -> Optional[int]:
     if not raw or not raw.isdigit():
         return None
     pid = int(raw)
-    return pid if _pid_alive(pid) else None
+    if not _pid_alive(pid):
+        return None
+    # A dead launcher number is recycled fast: signalling the group of whatever now owns the
+    # pid would kill a stranger. The recorded start time, session and command line must still
+    # describe this pid, or the record is stale.
+    return pid if _identity_matches(pid) else None
+
+
+def _proc_signature(pid: int) -> Optional[Dict[str, object]]:
+    # This pid start time, session id and command line. None when the process is gone or
+    # unreadable: both read as stale, never as a match.
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        create_time = proc.create_time()
+        cmdline = proc.cmdline()
+    except Exception:
+        return None
+    try:
+        sid = os.getsid(pid)
+    except OSError:
+        return None
+    return {"create_time": create_time, "sid": sid, "cmdline": list(cmdline)}
+
+
+def _record_launcher_identity(pid: int) -> None:
+    # Persist what stop must re-verify before signalling: pid file plus process start time,
+    # session id and command line, written together so a naked pid never names a process stop
+    # would signal without verification. Best effort at spawn: when the child already exited,
+    # the wait loop in start reports it with the log tail.
+    (state_dir() / "launcher.pid").write_text(str(pid), encoding="utf-8")
+    sig = _proc_signature(pid)
+    if sig is None:
+        return
+    record = {"pid": pid, "create_time": sig["create_time"], "sid": sig["sid"], "cmdline": sig["cmdline"]}
+    (state_dir() / "launcher.identity.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def _identity_matches(pid: int) -> bool:
+    # True only when the recorded pid, start time, session leadership and command line all
+    # still describe this pid. Anything else - recycled pid, edited state, unreadable target -
+    # reads as stale.
+    try:
+        record = json.loads(_read(state_dir() / "launcher.identity.json") or "")
+    except ValueError:
+        return False
+    if not isinstance(record, dict) or record.get("pid") != pid:
+        return False
+    sig = _proc_signature(pid)
+    if sig is None:
+        return False
+    try:
+        same_start = float(record["create_time"]) == float(sig["create_time"])
+    except (TypeError, ValueError):
+        return False
+    return (same_start and record.get("sid") == sig["sid"] == pid
+            and record.get("cmdline") == sig["cmdline"])
 
 
 def _display_in_use(num: int) -> bool:
@@ -277,7 +341,8 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
         ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
         start_new_session=True, close_fds=True)
     log.close()
-    (sd / "launcher.pid").write_text(str(proc.pid), encoding="utf-8")
+    _record_launcher_identity(proc.pid)
+    _record_launcher_identity(proc.pid)
 
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
@@ -296,6 +361,10 @@ def stop() -> bool:
     pid = _launcher_pid()
     sd = state_dir()
     if pid is None:
+        # Stale record (dead, recycled or forged pid file): drop it so status goes quiet and the
+        # next start allocates fresh.
+        (sd / "launcher.pid").unlink(missing_ok=True)
+        (sd / "launcher.identity.json").unlink(missing_ok=True)
         (sd / "env").unlink(missing_ok=True)
         return False
     # The launcher runs in its own session; killing the group takes Xvnc, dbus and Xfce with it.
@@ -313,5 +382,6 @@ def stop() -> bool:
         except ProcessLookupError:
             pass
     (sd / "launcher.pid").unlink(missing_ok=True)
+    (sd / "launcher.identity.json").unlink(missing_ok=True)
     (sd / "env").unlink(missing_ok=True)
     return True
