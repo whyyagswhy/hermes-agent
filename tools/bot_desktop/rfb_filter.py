@@ -35,6 +35,11 @@ _FENCE = 248
 _MAX_CUT_TEXT = 256 * 1024
 _MAX_BUFFER = max(8 + _MAX_CUT_TEXT, 4 + 4 * 0xFFFF)
 
+# One feed call never emits more than this: a frame packed with tiny valid messages would
+# otherwise echo megabytes into Xvnc from a single call. Legit batches are kilobytes; a pasted
+# clipboard travels as one bounded message, so stream the rest across calls.
+_MAX_BATCH = 1024 * 1024
+
 
 class RfbClientFilter:
     """Feed client bytes with :meth:`feed`; get back the bytes allowed to reach Xvnc.
@@ -58,6 +63,8 @@ class RfbClientFilter:
             end = min(len(chunk), offset + room)
             out += self._feed(chunk[offset:end])
             offset = end
+            if len(out) > _MAX_BATCH and offset < len(chunk):
+                raise ValueError("RFB client batch exceeds 1 MiB output limit")
         return bytes(out)
 
     def _feed(self, chunk: bytes) -> bytes:

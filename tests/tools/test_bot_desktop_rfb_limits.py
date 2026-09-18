@@ -38,3 +38,31 @@ def test_bounded_clipboards_and_watch_requests_survive_fragmentation_and_large_c
     expected = (message + refresh) * 2 if holder else refresh * 2
     assert received == expected
     assert parser.feed(refresh) == refresh
+
+
+_FUR = bytes([3, 0]) + bytes(8)
+_FIVE_MIB = 5 * 1024 * 1024
+
+
+@pytest.mark.parametrize('holder', [False, True])
+def test_single_feed_batch_output_is_bounded(holder):
+    parser = RfbClientFilter(lambda: holder)
+    parser.feed(_HANDSHAKE)
+    batch = _FUR * (_FIVE_MIB // len(_FUR))
+    assert len(batch) > _FIVE_MIB - len(_FUR)
+    with pytest.raises(ValueError, match='batch'):
+        parser.feed(batch)
+
+
+def test_chunked_streaming_keeps_peak_bounded():
+    parser = RfbClientFilter(lambda: True)
+    parser.feed(_HANDSHAKE)
+    stream = _FUR * (_FIVE_MIB // len(_FUR))
+    peaks = []
+    out_parts = []
+    for i in range(0, len(stream), 65536):
+        part = parser.feed(stream[i:i + 65536])
+        peaks.append(len(part))
+        out_parts.append(part)
+    assert max(peaks) <= 1024 * 1024
+    assert type(out_parts[0])().join(out_parts) == stream

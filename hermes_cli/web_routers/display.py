@@ -25,11 +25,15 @@ _log = logging.getLogger(__name__)
 router = APIRouter()
 
 _READ_CHUNK = 64 * 1024
+# One inbound WebSocket frame is never read past this: the parser bounds its own buffer, but
+# Starlette assembles the whole frame first, so the edge refuses the giant ones up front.
+_MAX_CLIENT_FRAME = 1024 * 1024
 _CLOSE_CONTROL_TAKEN = 4000
 _CLEAN_CLOSE = frozenset({1000, 1001})
 _CLOSE_DESKTOP_GONE = 4001
 _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
+_CLOSE_MESSAGE_TOO_BIG = 1009  # standards-track WS close for an oversize message
 _CLOSE_PROTOCOL = 1003
 
 
@@ -119,6 +123,9 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
             data = message.get("bytes")
             if data is None:
                 await ws.close(code=_CLOSE_PROTOCOL, reason="RFB is binary")
+                return
+            if len(data) > _MAX_CLIENT_FRAME:
+                await ws.close(code=_CLOSE_MESSAGE_TOO_BIG, reason="RFB frame exceeds 1 MiB limit")
                 return
             try:
                 allowed = rfb_filter.feed(data)
