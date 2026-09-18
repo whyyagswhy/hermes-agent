@@ -84,8 +84,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     try:
-        _bd_lease.release()
         stopped = _bd_runtime.stop()
+        _bd_lease.release()
         return _ok(rid, {**_display_snapshot(), "stopped": stopped})
     except Exception as e:
         return _err(rid, _DISPLAY_ERR, str(e))
