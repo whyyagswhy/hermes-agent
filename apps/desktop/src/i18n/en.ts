@@ -1020,6 +1020,12 @@ export const en: Translations = {
         toggleFailed: 'Could not update password manager',
         notInstalled: name =>
           `Not detected. Install the ${name} command-line tool and sign in to it; Hermes picks it up automatically.`,
+        setupSteps: name =>
+          name === 'onepassword'
+            ? 'Setup: install the 1Password CLI (`op`), then sign in with `op signin` (desktop-app integration also works). Hermes detects it automatically; reopen this page to confirm.'
+            : name === 'bitwarden'
+              ? 'Setup: install the Bitwarden CLI (`bw`), then run `bw login` once in a terminal. Hermes detects it automatically; reopen this page to confirm.'
+              : 'Setup: install its command-line tool and sign in to it. Hermes detects it automatically; reopen this page to confirm.',
         disabledDesc: 'Detected but turned off for Hermes.',
         lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',

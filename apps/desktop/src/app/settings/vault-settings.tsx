@@ -518,7 +518,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               }
               description={
                 !source.installed
-                  ? v.sources.notInstalled(source.display_name)
+                  ? `${v.sources.notInstalled(source.display_name)} ${v.sources.setupSteps(source.name)}`
                   : source.enabled
                     ? source.unlocked
                       ? v.sources.unlockedDesc

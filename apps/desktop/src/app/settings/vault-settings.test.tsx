@@ -274,4 +274,47 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
     expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
   })
+
+  it('shows actionable per-manager setup steps when nothing is installed', async () => {
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed: false
+            },
+            {
+              name: 'bitwarden',
+              display_name: 'Bitwarden',
+              enabled: false,
+              needs_unlock: true,
+              unlocked: false,
+              installed: false
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+    renderVault()
+
+    await waitFor(() => expect(screen.getAllByText('Not detected')).toHaveLength(2))
+    // Each undetected manager names its own CLI and sign-in step — no dead end.
+    expect(screen.getByText(/1Password CLI.*op.*op signin/)).toBeTruthy()
+    expect(screen.getByText(/Bitwarden CLI.*bw.*bw login/)).toBeTruthy()
+  })
+
+  it('falls back to generic setup guidance for an unknown manager', async () => {
+    const { en } = await import('@/i18n/en')
+
+    expect(en.settings.vault.sources.setupSteps('onepassword')).toMatch(/op signin/)
+    expect(en.settings.vault.sources.setupSteps('bitwarden')).toMatch(/bw login/)
+    expect(en.settings.vault.sources.setupSteps('example')).toMatch(/command-line tool/)
+  })
 })

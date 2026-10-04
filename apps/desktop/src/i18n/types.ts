@@ -864,6 +864,7 @@ export interface Translations {
         blurb: string
         toggleFailed: string
         notInstalled: (name: string) => string
+        setupSteps: (name: string) => string
         disabledDesc: string
         lockedDesc: string
         unlockedDesc: string
