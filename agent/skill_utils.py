@@ -273,6 +273,24 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return disabled - ESSENTIAL_SKILLS
 
 
+def skills_compact_category_headers() -> bool:
+    """Whether category headers drop DESCRIPTION text (skills.compact_category_headers).
+
+    Default False, so prompts stay byte-identical unless explicitly opted in.
+    """
+    try:
+        raw = _skills_cfg_get("compact_category_headers")
+    except Exception:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("1", "true", "yes", "y", "on")
+    return False
+
+
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
     ``hermes config set`` stores lists as quoted JSON/Python-literal strings;

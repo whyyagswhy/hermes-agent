@@ -117,5 +117,28 @@ def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home)
         assert entry["index_line_skill_count"] == 2
 
 
+def test_compact_category_headers_drops_descs_but_keeps_rows(isolated_home):
+    # Headers lose DESCRIPTION text under the flag; skill rows are byte-identical.
+    from agent.prompt_builder import build_skills_system_prompt
+
+    _seed_skill(isolated_home, "header-skill", "header skill description")
+    (isolated_home / "skills" / "demo" / "DESCRIPTION.md").write_text(
+        """---
+description: Demo category blurb
+---
+""",
+        encoding="utf-8",
+    )
+    full = build_skills_system_prompt()
+    assert "  demo: Demo category blurb" in full
+    compacted = build_skills_system_prompt(compact_category_headers=True)
+    assert "Demo category blurb" not in compacted
+    assert "  demo:" in compacted.splitlines()
+    full_rows = [line for line in full.splitlines() if line.startswith("    - ")]
+    compacted_rows = [
+        line for line in compacted.splitlines() if line.startswith("    - ")
+    ]
+    assert compacted_rows == full_rows != []
+
 
 

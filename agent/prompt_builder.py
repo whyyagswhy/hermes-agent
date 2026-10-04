@@ -25,7 +25,7 @@ from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
-    skill_matches_platform, skill_matches_platform_list,
+    skill_matches_platform, skill_matches_platform_list, skills_compact_category_headers,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_signature
@@ -1330,6 +1330,7 @@ def _current_session_platform_hint() -> str:
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None, available_toolsets: "set[str] | None" = None,
     compact_categories: "frozenset[str] | None" = None, skills_dir_override: "Path | None" = None,
+    compact_category_headers: "bool | None" = None,
 ) -> str:
     """Compact skill index for the system prompt.
 
@@ -1338,6 +1339,9 @@ def build_skills_system_prompt(
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
+    ``compact_category_headers`` drops per-category DESCRIPTION text from the header lines while
+    leaving every skill row untouched. ``None`` (default) reads ``skills.compact_category_headers``
+    from config.yaml (default off), so prompts stay byte-identical unless explicitly opted in.
     """
     _home_token = None
     if skills_dir_override is not None:
@@ -1351,8 +1355,16 @@ def build_skills_system_prompt(
         extra_roots = [(t, d) for t, d in get_skill_search_roots(skills_dir) if t != TIER_LOCAL]
         if not skills_dir.exists() and not extra_roots:
             return ""
+        if compact_category_headers is None:
+            try:
+                resolved_headers = skills_compact_category_headers()
+            except Exception:
+                resolved_headers = False
+        else:
+            resolved_headers = bool(compact_category_headers)
         return _build_skills_system_prompt_inner(
-            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories,
+            resolved_headers)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1402,6 +1414,7 @@ def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
     compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", unloadable: "list[str]" = (),
+    compact_category_headers: bool = False,
 ) -> str:
     """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
     sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
@@ -1427,8 +1440,11 @@ def _render_skills_index(
         if category in demoted:
             index_lines.append(f"  {category} [names only]: {', '.join(sorted({n for n, _ in entries}))}")
             continue
-        cat_desc = category_descriptions.get(category, "")
-        index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
+        if compact_category_headers:
+            index_lines.append(f"  {category}:")
+        else:
+            cat_desc = category_descriptions.get(category, "")
+            index_lines.append(f"  {category}: {cat_desc}" if cat_desc else f"  {category}:")
         seen = set()
         for name, desc in sorted(entries, key=lambda x: x[0]):  # stable: first entry per name wins
             if name not in seen:
@@ -1472,6 +1488,7 @@ def _oneshot_prompt_variant() -> bool:
 def _build_skills_system_prompt_inner(
     skills_dir: "Path", extra_roots: "list[tuple[int, Path]]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
+    compact_category_headers: bool = False,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
@@ -1481,6 +1498,7 @@ def _build_skills_system_prompt_inner(
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        bool(compact_category_headers),
         _oneshot_prompt_variant(),
     )
     snapshot = _load_skills_snapshot(skills_dir)
@@ -1543,7 +1561,9 @@ def _build_skills_system_prompt_inner(
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
     unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable)
+    result = _render_skills_index(
+        skills_by_category, category_descriptions, compact_categories, available_tools, unloadable,
+        compact_category_headers)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

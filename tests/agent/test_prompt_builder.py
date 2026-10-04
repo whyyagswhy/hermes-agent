@@ -299,6 +299,73 @@ class TestBuildSkillsSystemPrompt:
 
 
 
+    def test_compact_category_headers_drops_descs_but_keeps_rows(
+        self, monkeypatch, tmp_path
+    ):
+        # Headers lose DESCRIPTION text under the flag; rows stay byte-identical.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat = tmp_path / "skills" / "demo"
+        skill = cat / "header-probe-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            """---
+name: header-probe-skill
+description: Probe skill description
+---
+"""
+        )
+        (cat / "DESCRIPTION.md").write_text(
+            """---
+description: Demo category blurb
+---
+"""
+        )
+        full = build_skills_system_prompt()
+        assert "  demo: Demo category blurb" in full
+        compacted = build_skills_system_prompt(compact_category_headers=True)
+        assert "Demo category blurb" not in compacted
+        assert "  demo:" in compacted.splitlines()
+        full_rows = [line for line in full.splitlines() if line.startswith("    - ")]
+        compacted_rows = [
+            line for line in compacted.splitlines() if line.startswith("    - ")
+        ]
+        assert compacted_rows == full_rows != []
+        assert build_skills_system_prompt(compact_category_headers=False) == full
+
+    def test_compact_category_headers_config_gated_default_off(
+        self, monkeypatch, tmp_path
+    ):
+        # Default keeps header descriptions; skills.compact_category_headers opts in.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat = tmp_path / "skills" / "demo"
+        skill = cat / "header-gated-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            """---
+name: header-gated-skill
+description: Gated skill description
+---
+"""
+        )
+        (cat / "DESCRIPTION.md").write_text(
+            """---
+description: Demo category blurb
+---
+"""
+        )
+        assert "Demo category blurb" in build_skills_system_prompt()
+        (tmp_path / "config.yaml").write_text(
+            """skills:
+  compact_category_headers: true
+"""
+        )
+        gated = build_skills_system_prompt()
+        assert "Demo category blurb" not in gated
+        assert "  demo:" in gated.splitlines()
+        assert "header-gated-skill" in gated
+        assert "Gated skill description" in gated
+
+
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
