@@ -208,8 +208,23 @@ def _set_bundled_skills_opt_out(opt_out: bool, log_label: str, on_success=None, 
     ``on_success(sync_result)`` / ``on_error(exc)`` report the outcome."""
     try:
         from tools.skills_sync import sync_skills
-        from tools.skills_sync_bundled_ops import set_bundled_skills_opt_out
+        from tools.skills_sync_bundled_ops import remove_pristine_bundled_skills, set_bundled_skills_opt_out
         set_bundled_skills_opt_out(opt_out)
+        if opt_out:
+            # Blank Slate keeps no bundled skills on disk: drop installer-seeded
+            # pristine copies (user-modified ones are kept). Never fatal to setup,
+            # and the sync below re-seeds essentials only while opted out (#132883).
+            try:
+                removed = remove_pristine_bundled_skills()
+                count = len(removed.get("removed", []))
+                logger.debug("blank-slate %s removed %d pristine bundled skills", log_label, count)
+                try:
+                    from hermes_cli.setup import print_info
+                    print_info(f"Removed {count} pristine bundled skills (user-modified kept).")
+                except Exception as exc:
+                    logger.debug("blank-slate %s print_info skipped: %s", log_label, exc)
+            except Exception as exc:
+                logger.debug("blank-slate %s pristine-removal skipped: %s", log_label, exc)
         result = sync_skills(quiet=True)
         if on_success is not None:
             on_success(result)

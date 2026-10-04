@@ -110,6 +110,9 @@ class TestBlankSlateFork:
         opted_out = {"value": None}
         monkeypatch.setattr("tools.skills_sync_bundled_ops.set_bundled_skills_opt_out",
                             lambda enabled: opted_out.__setitem__("value", enabled))
+        monkeypatch.setattr("tools.skills_sync_bundled_ops.remove_pristine_bundled_skills",
+                            lambda dry_run=False: {"ok": True, "removed": [], "skipped": []})
+        monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: {"copied": []})
 
         cfg = {}
         setup_quick._run_blank_slate_setup(cfg, tmp_path, is_existing=False)
@@ -119,3 +122,88 @@ class TestBlankSlateFork:
         assert walked["called"] is False
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
+
+
+class TestBlankSlateOptOutRemovesSeededSkills:
+    """#132883: blank-slate opt-out must remove installer-seeded pristine skills.
+
+    All disk state is under tmp_path (patched tools.skills_sync paths);
+    the real home directory state is never touched.
+    """
+
+    def _seed_two_skills(self, tmp_path):
+        from unittest.mock import patch
+        from tools.skills_sync import sync_skills
+        bundled = tmp_path / "bundled"
+        for n in ("hermes-agent", "alpha"):
+            d = bundled / n
+            d.mkdir(parents=True)
+            content = "---" + chr(10) + "name: " + n + chr(10) + "---" + chr(10) + "body " + n + chr(10)
+            (d / "SKILL.md").write_text(content)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()
+        patches = [
+            patch("tools.skills_sync._get_bundled_dir", return_value=bundled),
+            patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"),
+            patch("tools.skills_sync.SKILLS_DIR", skills_dir),
+            patch("tools.skills_sync.MANIFEST_FILE", manifest_file),
+            patch("tools.skills_sync.HERMES_HOME", home),
+        ]
+        for c in patches:
+            c.start()
+        try:
+            sync_skills(quiet=True)
+        finally:
+            for c in patches:
+                c.stop()
+        assert (skills_dir / "hermes-agent" / "SKILL.md").exists()
+        assert (skills_dir / "alpha" / "SKILL.md").exists()
+        return bundled, skills_dir, manifest_file, home
+
+    def _patched(self, bundled, skills_dir, manifest_file, home):
+        import contextlib
+        from unittest.mock import patch
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("tools.skills_sync.HERMES_HOME", home))
+        return stack
+
+    def test_opt_out_removes_pristine_seeded_skills(self, tmp_path):
+        bundled, skills_dir, manifest_file, home = self._seed_two_skills(tmp_path)
+        with self._patched(bundled, skills_dir, manifest_file, home):
+            setup_quick._set_bundled_skills_opt_out(True, "test opt-out")
+        assert (home / ".no-bundled-skills").exists()
+        assert not (skills_dir / "alpha").exists(), "pristine seeded skill left on disk (#132883)"
+        assert (skills_dir / "hermes-agent" / "SKILL.md").exists(), "essential skill must be re-seeded"
+
+    def test_opt_out_keeps_user_modified_skills(self, tmp_path):
+        bundled, skills_dir, manifest_file, home = self._seed_two_skills(tmp_path)
+        edited = "---" + chr(10) + "name: alpha" + chr(10) + "---" + chr(10) + "EDITED" + chr(10)
+        (skills_dir / "alpha" / "SKILL.md").write_text(edited)
+        with self._patched(bundled, skills_dir, manifest_file, home):
+            setup_quick._set_bundled_skills_opt_out(True, "test opt-out")
+        assert (skills_dir / "alpha" / "SKILL.md").exists()
+        assert "EDITED" in (skills_dir / "alpha" / "SKILL.md").read_text()
+
+    def test_opt_out_tolerates_removal_failure(self, tmp_path):
+        from unittest.mock import patch
+        bundled, skills_dir, manifest_file, home = self._seed_two_skills(tmp_path)
+        seen = {}
+        with self._patched(bundled, skills_dir, manifest_file, home):
+            with patch("tools.skills_sync_bundled_ops.remove_pristine_bundled_skills", side_effect=OSError("disk gone")):
+                setup_quick._set_bundled_skills_opt_out(True, "test opt-out",
+                    on_success=lambda result: seen.__setitem__("ok", True),
+                    on_error=lambda exc: seen.__setitem__("error", exc))
+        assert seen.get("ok") is True and "error" not in seen
+
+    def test_opt_in_does_not_remove_seeded_skills(self, tmp_path):
+        bundled, skills_dir, manifest_file, home = self._seed_two_skills(tmp_path)
+        with self._patched(bundled, skills_dir, manifest_file, home):
+            setup_quick._set_bundled_skills_opt_out(False, "test opt-in")
+        assert not (home / ".no-bundled-skills").exists()
+        assert (skills_dir / "alpha" / "SKILL.md").exists()
