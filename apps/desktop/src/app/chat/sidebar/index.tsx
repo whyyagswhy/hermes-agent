@@ -298,7 +298,7 @@ export function stripFtsMarkers(snippet: string): string {
 // sessions keep today's snippet fallback via sessionTitle().
 // Exported for tests.
 export function searchResultToSession(result: SessionSearchResult): SessionInfo {
-  const ts = result.session_started ?? Date.now() / 1000
+  const ts = result.timestamp ?? result.session_started ?? Date.now() / 1000
 
   return {
     archived: false,

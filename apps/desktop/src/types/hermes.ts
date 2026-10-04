@@ -1376,6 +1376,9 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Matched-message timestamp (seconds) — the recency that actually matched.
+   *  Null on id-match rows; the sidebar falls back to session_started. */
+  timestamp?: number | null
   /** Real session title from the sessions table; the backend enriches every
    *  search hit with it (web_routers/sessions.py add_lineage_result), absent
    *  for untitled sessions. The sidebar maps it onto the synthesized row so

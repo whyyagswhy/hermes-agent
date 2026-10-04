@@ -54,3 +54,34 @@ describe('searchResultToSession', () => {
     expect(s.preview).toBe('[{"id": "call_d632e8dc7bf740048f242bfe", "c...')
   })
 })
+
+describe('searchResultToSession matched-message timestamp (132823)', () => {
+  it('prefers the matched-message timestamp over session creation time', () => {
+    const s = searchResultToSession({
+      session_id: '20260720_233',
+      session_started: 100,
+      timestamp: 1754000000,
+      snippet: 'content hit',
+      role: 'assistant',
+      model: null,
+      source: null
+    })
+
+    expect(s.last_active).toBe(1754000000)
+    expect(s.started_at).toBe(1754000000)
+  })
+
+  it('falls back to session_started when the hit carries no timestamp', () => {
+    const s = searchResultToSession({
+      session_id: '20260720_233',
+      session_started: 100,
+      snippet: 'content hit',
+      role: 'assistant',
+      model: null,
+      source: null
+    })
+
+    expect(s.last_active).toBe(100)
+    expect(s.started_at).toBe(100)
+  })
+})

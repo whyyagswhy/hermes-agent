@@ -131,6 +131,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "cli",
                 "model": "claude",
                 "session_started": 100,
+                # ID rows are session rows: no matched message, so no timestamp.
+                "timestamp": None,
                 # Row recency rides on id-match rows (sessions table)...
                 "last_active": 150,
             },
@@ -145,6 +147,9 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "desktop",
                 "model": "gpt",
                 "session_started": 200,
+                # This fake omits the matched-message timestamp the real DB
+                # always SELECTs (covered with a real value in the 132823 test).
+                "timestamp": None,
                 # ...while FTS hits have none and leave it null.
                 "last_active": None,
             },
@@ -262,3 +267,43 @@ def test_deep_lineage_search_resolves_tip_from_matched_id(monkeypatch):
     assert row["session_id"] == _DeepLineageSessionDB.TIP
     # Dedupe/lineage bookkeeping stays keyed by the root.
     assert row["lineage_root"] == "s000"
+
+
+class _TimestampFakeSessionDB(_FakeSessionDB):
+    """Same shape as _FakeSessionDB, but rows carry the matched-message
+    timestamp the real DB always SELECTs
+    (hermes_state_search._SEARCH_SELECT_TAIL)."""
+
+    def search_sessions_by_id(self, query, limit=20, include_archived=True,
+                              source=None, sources=None, exclude_sources=None):
+        return []
+
+    def search_messages(self, query, source_filter=None, exclude_sources=None,
+                        limit=20, fields=None):
+        type(self).requested_fields = fields
+        return [{
+            "session_id": "content_session",
+            "snippet": "content hit",
+            "role": "assistant",
+            "source": "desktop",
+            "model": "gpt",
+            "session_started": 200,
+            "timestamp": 1754000000,
+        }][:limit]
+
+
+def test_desktop_session_search_fts_hit_carries_matched_message_timestamp(monkeypatch):
+    """Regression (#132823): FTS hits rendered session creation time because the
+    endpoint projected (session_id, role, snippet, source, model,
+    session_started) with no timestamp and hit_payload dropped the
+    matched-message time, leaving the sidebar/desktop to fall back to
+    session_started for recency."""
+    _TimestampFakeSessionDB.requested_fields = None
+    monkeypatch.setattr("hermes_state.SessionDB", _TimestampFakeSessionDB)
+
+    response = asyncio.run(_rt_sessions.search_sessions(q="hello", limit=2))
+
+    assert "timestamp" in (_TimestampFakeSessionDB.requested_fields or ())
+    [hit] = response["results"]
+    assert hit["session_id"] == "content_session"
+    assert hit["timestamp"] == 1754000000
