@@ -1137,6 +1137,7 @@ def _build_replay_entry(
         role in ("user", "assistant")
         and isinstance(_sidecar, str)
         and _sidecar
+        and msg.get("display_kind") != "hidden"
         and content == msg.get("content")):
         entry["api_content"] = _sidecar
     if role == "assistant":
@@ -1240,12 +1241,15 @@ def _has_replayable_sidecar(role: Any, content: Any, msg: Dict[str, Any]) -> boo
 
     A reasoning-only clean stop persists ``content=""`` and the promoted text in ``api_content``
     (agent/turn_final_response.py). Gating replay on ``content`` alone dropped that row, so the
-    next gateway turn lost the assistant's answer and replayed user->user."""
+    next gateway turn lost the assistant's answer and replayed user->user.
+
+    Hidden rows are never replayable: an interrupted turn leaves an on-screen-empty placeholder with a neutral api_content sidecar so the pre-call sanitizer does not re-heal it, and replaying that sidecar makes the model echo it (#132949)."""
     return (
         role == "assistant"
         and not content
         and isinstance(msg.get("api_content"), str)
         and bool(msg.get("api_content"))
+        and msg.get("display_kind") != "hidden"
     )
 
 
