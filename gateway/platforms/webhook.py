@@ -249,7 +249,13 @@ class WebhookAdapter(BasePlatformAdapter):
             self._validate_route(name, route)
         # client_max_size enforces the cap on every read path, including chunked bodies without
         # Content-Length that bypass the header check.
-        app = web.Application(client_max_size=self._max_body_bytes)
+        # handler_args disables the handler-level SO_KEEPALIVE setsockopt: aiohttp's
+        # tcp_keepalive() has no OSError guard (unlike tcp_nodelay), so a firewall-torn
+        # socket raises EINVAL out of RequestHandler.connection_made and masks the cause.
+        app = web.Application(
+            client_max_size=self._max_body_bytes,
+            handler_args={"tcp_keepalive": False},
+        )
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # /p/<profile>/ routes the event to that profile (honored only under gateway.multiplex_profiles).
