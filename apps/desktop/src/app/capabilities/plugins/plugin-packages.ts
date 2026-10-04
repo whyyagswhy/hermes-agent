@@ -133,3 +133,17 @@ export function mergePluginPackages(
     return a.name.localeCompare(b.name)
   })
 }
+
+/**
+ * Load-time default for a unified package half on the desktop side (#132802):
+ * ON when the agent half is enabled in the selected profile, opt-in otherwise.
+ * The join key is the package folder name (see mergePluginPackages). An explicit
+ * user enable/disable always wins - this only feeds the default that pluginActive
+ * falls back to when no choice is stored.
+ */
+export function unifiedDesktopDefaultOn(
+  agentRows: readonly AgentPluginRow[],
+  packageName: string
+): boolean {
+  return agentRows.some(row => row.name === packageName && row.status === 'enabled')
+}

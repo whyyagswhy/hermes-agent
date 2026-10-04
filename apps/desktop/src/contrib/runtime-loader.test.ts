@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
+import { $agentPlugins } from '@/store/agent-plugins'
+import type { AgentPluginRow } from '@/store/agent-plugins'
 
 import { emitGatewayEvent } from './events'
 import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
@@ -1184,6 +1186,144 @@ describe('manual "Reload desktop plugins" (#91503)', () => {
       unloadRuntimePlugin('replaceable')
       delete (globalThis as unknown as { __replaceableV1?: unknown }).__replaceableV1
       delete (globalThis as unknown as { __replaceableV2?: unknown }).__replaceableV2
+    }
+  })
+})
+
+describe('unified desktop half follows its agent half (#132802)', () => {
+  const root = '/local/.hermes/desktop-plugins'
+
+  const blobToDataUrl = () => {
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(
+      blob => 'data:text/javascript;base64,' + Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')
+    )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal('Blob', class { parts: string[]; constructor(parts: string[]) { this.parts = parts } })
+
+    return () => { createObjectURL.mockRestore(); revokeObjectURL.mockRestore(); vi.stubGlobal('Blob', RealBlob) }
+  }
+
+  const agentRow = (over: Partial<AgentPluginRow>): AgentPluginRow => ({
+    description: '', key: 'k', name: 'k', source: 'git', status: 'enabled', version: '1.0.0', ...over
+  })
+
+  const unifiedRootWith = (folder: string, pluginId: string, pkg: string, present: () => boolean) => {
+    const dir = root + '/' + folder
+    readDir.mockImplementation(async d => {
+      if (d === root) { return { entries: present() ? [{ isDirectory: true, name: folder, path: dir }] : [] } }
+
+      if (d === dir) {
+        return { entries: [
+          { isDirectory: false, name: '.hermes-package.json', path: dir + '/.hermes-package.json' },
+          { isDirectory: false, name: 'plugin.js', path: dir + '/plugin.js' }
+        ] }
+      }
+
+      return { entries: [] }
+    })
+    readFileText.mockImplementation(async file =>
+      file.endsWith('.hermes-package.json')
+        ? { text: JSON.stringify({ package: pkg, source: '/x/plugins/' + pkg + '/desktop', sourceMtimeMs: 1 }) }
+        : { text: 'export default { id: "' + pluginId + '", register: globalThis.__followRegister }' }
+    )
+    watchPreviewFile.mockResolvedValue({ id: 'w-' + pluginId })
+  }
+
+  afterEach(() => { $agentPlugins.set([]) })
+  it('defaults a unified desktop half ON when its agent half is enabled', async () => {
+    desktopPluginsRoot.mockResolvedValue(root)
+    let present = true
+    unifiedRootWith('fol1', 'fol1plug', 'fol1-pkg', () => present)
+    $agentPlugins.set([agentRow({ name: 'fol1-pkg', status: 'enabled', has_desktop_half: true })])
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __followRegister: unknown }).__followRegister = register
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().fol1plug).toMatchObject({ kind: 'disk', status: 'loaded', packageName: 'fol1-pkg' })
+      expect(register).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __followRegister?: unknown }).__followRegister
+      present = false
+      await discoverRuntimePlugins()
+    }
+  })
+  it('keeps a unified desktop half opt-in when its agent half is disabled', async () => {
+    desktopPluginsRoot.mockResolvedValue(root)
+    let present = true
+    unifiedRootWith('fol2', 'fol2plug', 'fol2-pkg', () => present)
+    $agentPlugins.set([agentRow({ name: 'fol2-pkg', status: 'disabled', has_desktop_half: true })])
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __followRegister: unknown }).__followRegister = register
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().fol2plug).toMatchObject({ kind: 'disk', status: 'disabled', packageName: 'fol2-pkg' })
+      expect(register).not.toHaveBeenCalled()
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __followRegister?: unknown }).__followRegister
+      present = false
+      await discoverRuntimePlugins()
+    }
+  })
+  it('activates the desktop half when the agent half is enabled after the scan', async () => {
+    desktopPluginsRoot.mockResolvedValue(root)
+    let present = true
+    unifiedRootWith('fol3', 'fol3plug', 'fol3-pkg', () => present)
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __followRegister: unknown }).__followRegister = register
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().fol3plug).toMatchObject({ status: 'disabled' })
+      expect(register).not.toHaveBeenCalled()
+      $agentPlugins.set([agentRow({ name: 'fol3-pkg', status: 'enabled', has_desktop_half: true })])
+      await vi.waitFor(() => expect(register).toHaveBeenCalledTimes(1))
+      expect($pluginRecords.get().fol3plug.status).toBe('loaded')
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __followRegister?: unknown }).__followRegister
+      present = false
+      await discoverRuntimePlugins()
+    }
+  })
+  it('an explicit user disable still wins over an enabled agent half', async () => {
+    desktopPluginsRoot.mockResolvedValue(root)
+    let present = true
+    unifiedRootWith('fol4', 'fol4plug', 'fol4-pkg', () => present)
+    await setPluginEnabled('fol4plug', false)
+    $agentPlugins.set([agentRow({ name: 'fol4-pkg', status: 'enabled', has_desktop_half: true })])
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __followRegister: unknown }).__followRegister = register
+    const restore = blobToDataUrl()
+
+    try {
+      await discoverRuntimePlugins()
+      expect($pluginRecords.get().fol4plug).toMatchObject({ status: 'disabled' })
+      expect(register).not.toHaveBeenCalled()
+      $agentPlugins.set([agentRow({ name: 'fol4-pkg', status: 'enabled', has_desktop_half: true, version: '1.0.1' })])
+      await new Promise(resolve => setTimeout(resolve, 50))
+      expect(register).not.toHaveBeenCalled()
+    } finally {
+      restore()
+      delete (globalThis as unknown as { __followRegister?: unknown }).__followRegister
+      present = false
+      await discoverRuntimePlugins()
     }
   })
 })

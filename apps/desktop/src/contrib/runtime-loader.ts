@@ -34,13 +34,15 @@
 
 import { atom } from 'nanostores'
 
+import { unifiedDesktopDefaultOn } from '@/app/capabilities/plugins/plugin-packages'
 import { isReadFileErrorResult } from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
+import { $agentPlugins, type AgentPluginRow } from '@/store/agent-plugins'
 import { notifyError } from '@/store/notifications'
 
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
-import { $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
+import { $pluginDecisions, $pluginRecords, dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
   /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
@@ -868,8 +870,11 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
         const marker = await readPackageMarker(desktop, dir.path)
 
         const record: DiskPlugin = {
-          // A unified package's desktop half ships opt-in, like its agent half.
-          defaultEnabled: marker ? false : undefined,
+          // A unified package desktop half follows its agent half (#132802): on when
+          // that half is enabled in the selected profile, opt-in otherwise. An
+          // explicit user decision always wins (pluginActive at registration
+          // consults the stored choice first).
+          defaultEnabled: marker ? unifiedDesktopDefaultOn($agentPlugins.get(), marker.package) : undefined,
           file,
           id: null,
           origin: dir.name,
@@ -904,6 +909,42 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
     scanning = false
   }
 }
+
+/** Follow the agent half into the desktop half DEFAULT (#132802). The disk
+ *  scan usually runs before the agent rows load (and an agent toggle lands
+ *  after it), so marked entries recompute their root posture whenever the rows
+ *  change. Only the ON direction: an enabled agent half turns its desktop half
+ *  on; disabling the agent half never auto-disables desktop (sticky-on, like
+ *  every other default-on plugin). Halves with an explicit user decision only get
+ *  their posture refreshed - never activated - so the stored choice keeps winning
+ *  and the next manual reload honors it. */
+function reconcileUnifiedDefaults(rows: readonly AgentPluginRow[]): void {
+  const decided = $pluginDecisions.get()
+
+  for (const entry of disk.values()) {
+    if (!entry.packageName) {
+      continue
+    }
+
+    const next = unifiedDesktopDefaultOn(rows, entry.packageName)
+
+    if (next === entry.defaultEnabled) {
+      continue
+    }
+
+    entry.defaultEnabled = next
+
+    if (!next || !entry.id || entry.id in decided) {
+      continue
+    }
+
+    void loadDiskPlugin(entry)
+  }
+}
+
+$agentPlugins.listen(rows => {
+  reconcileUnifiedDefaults(rows)
+})
 
 /** Forget a disk entry whose folder is gone: unload its registration, drop
  *  its inventory rows, stop its file watch. */

@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { PluginRecord } from '@/contrib/plugins-store'
 import type { AgentPluginRow } from '@/store/agent-plugins'
 
-import { mergePluginPackages } from './plugin-packages'
+import { mergePluginPackages, unifiedDesktopDefaultOn } from './plugin-packages'
 
 const agent = (over: Partial<AgentPluginRow>): AgentPluginRow => ({
   description: '',
@@ -122,5 +122,24 @@ describe('mergePluginPackages', () => {
       ['snapcompact', 'agent'],
       ['desktop:bots', 'desktop']
     ])
+  })
+})
+
+describe('unifiedDesktopDefaultOn (#132802)', () => {
+  it('defaults the desktop half on only when its agent half is enabled', () => {
+    const rows = [
+      agent({ name: 'on-pkg', status: 'enabled' }),
+      agent({ name: 'off-pkg', status: 'disabled' }),
+      agent({ name: 'never-pkg', status: 'not enabled' })
+    ]
+
+    expect(unifiedDesktopDefaultOn(rows, 'on-pkg')).toBe(true)
+    expect(unifiedDesktopDefaultOn(rows, 'off-pkg')).toBe(false)
+    expect(unifiedDesktopDefaultOn(rows, 'never-pkg')).toBe(false)
+  })
+
+  it('stays opt-in when the agent half is absent from this profile', () => {
+    expect(unifiedDesktopDefaultOn([], 'ghost-pkg')).toBe(false)
+    expect(unifiedDesktopDefaultOn([agent({ name: 'other-pkg', status: 'enabled' })], 'ghost-pkg')).toBe(false)
   })
 })
