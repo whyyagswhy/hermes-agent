@@ -54,6 +54,10 @@ _MAX_REFERENCE_FILES = 60
 # this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
 # (100k) is a safety stop, not a target — agent-authored skills grew to sit right under it.
 _BODY_SOFT_BUDGET_CHARS = 24_000
+# reference-toc: a references/ file this long is a lookup document, not prose;
+# without a table of contents near the top the agent must read all of it.
+_REF_TOC_MIN_LINES = 100
+_REF_TOC_SCAN_LINES = 30
 
 ERROR = "error"
 WARNING = "warning"
@@ -78,6 +82,20 @@ def _warn(rule: str, message: str) -> LintFinding:
 def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
     return re.sub(r"```.*?```", "", body, flags=re.S)
+
+
+def _has_toc(text: str) -> bool:
+    """True when the first ~30 lines carry a table of contents.
+
+    Accepts a "Contents" heading or a link list (the two shapes a
+    hand-written TOC takes); code blocks are stripped so a fenced example
+    listing does not count.
+    """
+    lines = _strip_code_blocks(text).splitlines()[:_REF_TOC_SCAN_LINES]
+    if any(re.search(r"^#+\s*(table of contents|contents)\b", ln, re.I) for ln in lines):
+        return True
+    link_items = [ln for ln in lines if re.match(r"\s*[-*+]\s+\[.+?\]\(.+?\)", ln)]
+    return len(link_items) >= 2
 
 
 def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -> Iterator[LintFinding]:
@@ -159,6 +177,29 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         if not (skill_dir / rel).exists():
             yield _warn("dangling-reference", f"body references '{rel}' but that file "
                         f"does not exist in the skill directory.")
+    # reference-depth: every references/ file must link directly from SKILL.md
+    # (no SKILL.md -> A -> B chains). The entry point cannot know B exists
+    # otherwise, so B is unreachable depth.
+    refs_dir = skill_dir / "references"
+    if refs_dir.is_dir():
+        linked_from_body = {m.group(0) for m in re.finditer(r"references/[\w./-]+\.md", body)}
+        linked_from_refs: set[str] = set()
+        for ref_file in refs_dir.rglob("*.md"):
+            if not ref_file.is_file():
+                continue
+            try:
+                ref_text = ref_file.read_text(encoding="utf-8-sig", errors="ignore")
+            except OSError:
+                continue
+            linked_from_refs.update(
+                m.group(0)
+                for m in re.finditer(r"references/[\w./-]+\.md", _strip_code_blocks(ref_text))
+            )
+        for rel in sorted(linked_from_refs - linked_from_body):
+            if (skill_dir / rel).exists():
+                yield _warn("reference-depth", f"'{rel}' is linked only via another reference "
+                            f"file, not directly from SKILL.md; link it from the body so agents "
+                            f"can reach it in one hop.")
 
 
 def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintFinding]:
@@ -192,6 +233,19 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             yield _warn("references-sprawl",
                         f"{n_refs} files under references/; that is a per-session log, not topical depth. "
                         "Merge same-topic files into one rule set and drop incident narration.")
+        for ref in sorted(refs_dir.rglob("*.md")):
+            if any(part.startswith("_") for part in ref.parts):
+                continue
+            try:
+                ref_text = ref.read_text(encoding="utf-8-sig", errors="ignore")
+            except OSError:
+                continue
+            n_lines = len(ref_text.splitlines())
+            if n_lines > _REF_TOC_MIN_LINES and not _has_toc(ref_text):
+                yield _warn("reference-toc",
+                            f"'{ref.relative_to(skill_dir)}' is {n_lines} lines with no table of "
+                            f"contents in the first {_REF_TOC_SCAN_LINES} lines; add one so agents "
+                            f"can jump to the section they need.")
 
 
 def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:

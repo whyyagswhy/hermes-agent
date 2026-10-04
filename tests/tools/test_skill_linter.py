@@ -217,3 +217,80 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def _write_skill_with_refs(tmp_path, body_extra="", ref_files=None):
+    """Helper: skill dir with SKILL.md + references/*.md on disk."""
+    skill_dir = tmp_path / "my-skill"
+    refs = skill_dir / "references"
+    refs.mkdir(parents=True)
+    for name, ref_text in (ref_files or {}).items():
+        (refs / name).write_text(ref_text)
+    content = CLEAN + body_extra
+    (skill_dir / "SKILL.md").write_text(content)
+    return skill_dir, content
+
+
+def _long_ref_body(with_toc):
+    lines = ["# Long Topic", ""]
+    if with_toc:
+        lines += ["## Contents", "", "- [A](#a)", "- [B](#b)", "- [C](#c)", ""]
+    lines += ["## A", "aaa", "", "## B", "bbb", "", "## C", "ccc", ""]
+    while len(lines) <= 101:
+        lines.append(f"filler prose line {len(lines)}")
+    return "\n".join(lines) + "\n"
+
+
+def test_long_reference_without_toc_warns(tmp_path):
+    skill_dir, _ = _write_skill_with_refs(
+        tmp_path,
+        body_extra="\nSee references/long.md for detail.\n",
+        ref_files={"long.md": _long_ref_body(with_toc=False)},
+    )
+    findings = lint_skill(skill_dir / "SKILL.md")
+    assert "reference-toc" in _rules(findings)
+    assert any(f.severity == WARNING for f in findings if f.rule == "reference-toc")
+
+
+def test_long_reference_with_toc_ok(tmp_path):
+    skill_dir, _ = _write_skill_with_refs(
+        tmp_path,
+        body_extra="\nSee references/long.md for detail.\n",
+        ref_files={"long.md": _long_ref_body(with_toc=True)},
+    )
+    assert "reference-toc" not in _rules(lint_skill(skill_dir / "SKILL.md"))
+
+
+def test_short_reference_without_toc_ok(tmp_path):
+    skill_dir, _ = _write_skill_with_refs(
+        tmp_path,
+        body_extra="\nSee references/short.md for detail.\n",
+        ref_files={"short.md": "# Short\n\nA few lines.\n"},
+    )
+    assert "reference-toc" not in _rules(lint_skill(skill_dir / "SKILL.md"))
+
+
+def test_indirect_reference_only_via_other_ref_warns(tmp_path):
+    skill_dir, _ = _write_skill_with_refs(
+        tmp_path,
+        body_extra="\nSee references/a.md for detail.\n",
+        ref_files={
+            "a.md": "# A\n\nDeeper detail in references/b.md.\n",
+            "b.md": "# B\n\nLeaf content.\n",
+        },
+    )
+    findings = lint_skill(skill_dir / "SKILL.md")
+    assert "reference-depth" in _rules(findings)
+    assert any(f.severity == WARNING for f in findings if f.rule == "reference-depth")
+
+
+def test_directly_linked_references_ok(tmp_path):
+    skill_dir, _ = _write_skill_with_refs(
+        tmp_path,
+        body_extra="\nSee references/a.md and references/b.md for detail.\n",
+        ref_files={
+            "a.md": "# A\n\nDeeper detail in references/b.md.\n",
+            "b.md": "# B\n\nLeaf content.\n",
+        },
+    )
+    assert "reference-depth" not in _rules(lint_skill(skill_dir / "SKILL.md"))
