@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -709,3 +710,65 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+class TestTrackedConcurrentSaves:
+    """#132943: up to 8 post_tool_call workers share one tracked.json; unlocked
+    read-modify-write plus one shared ``.json.tmp`` loses updates."""
+
+    def test_concurrent_track_from_threads_loses_no_entries(self, _isolate_env):
+        dg = _load_lib()
+        n = 8
+        paths = []
+        for i in range(n):
+            p = _isolate_env / f"test_concurrent_{i}.py"
+            p.write_text("x\n")
+            paths.append(p)
+        barrier = threading.Barrier(n)
+        errors: list = []
+
+        def worker(p):
+            try:
+                barrier.wait(timeout=30)
+                dg.track(str(p), "test", silent=True)
+            except Exception as exc:  # noqa: BLE001 — collected, asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(p,)) for p in paths]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not [t for t in threads if t.is_alive()]
+        assert not errors
+        data = json.loads((_isolate_env / "disk-cleanup" / "tracked.json").read_text())
+        assert {Path(i["path"]) for i in data} == {p.resolve() for p in paths}
+
+    def test_concurrent_post_tool_call_hooks_track_all_files(self, _isolate_env):
+        pi = _load_plugin_init()
+        n = 8
+        paths = [_isolate_env / f"test_hook_race_{i}.py" for i in range(n)]
+        barrier = threading.Barrier(n)
+        errors: list = []
+
+        def worker(i, p):
+            try:
+                call_id = f"race-{i}"
+                pi._on_pre_tool_call(tool_name="write_file", args={"path": str(p)},
+                                     tool_call_id=call_id, task_id="t", session_id="s")
+                barrier.wait(timeout=30)
+                p.write_text("x\n")
+                pi._on_post_tool_call(tool_name="write_file", args={"path": str(p)},
+                                      result="OK", tool_call_id=call_id, task_id="t", session_id="s")
+            except Exception as exc:  # noqa: BLE001 — collected, asserted below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i, p)) for i, p in enumerate(paths)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not [t for t in threads if t.is_alive()]
+        assert not errors
+        data = json.loads((_isolate_env / "disk-cleanup" / "tracked.json").read_text())
+        assert {Path(i["path"]) for i in data} == {p.resolve() for p in paths}
