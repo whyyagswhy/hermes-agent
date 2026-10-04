@@ -50,10 +50,14 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    # Additive extras unioned with the curated default (or an explicit ``defer``
+    # override) in ``effective_defer_tools``; empty by default.
+    defer_extra: frozenset = frozenset()
 
     @property
     def effective_defer_tools(self) -> frozenset:
-        return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+        base = _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+        return base | self.defer_extra
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -71,6 +75,14 @@ class ToolSearchConfig:
                 "(e.g. [todo_list, computer_use]; [] keeps every tool eager) - "
                 "using the curated default set.", defer_raw)
             defer_raw = None
+        extra_raw = raw.get("defer_extra")
+        if extra_raw is not None and not isinstance(extra_raw, (list, tuple, set)):
+            # Same loud-then-ignore contract as ``defer``: a scalar is a typo, not an entry.
+            logger.warning(
+                "tools.tool_search.defer_extra is %r, expected a YAML list of tool names "
+                "(e.g. [terminal]; [] changes nothing) - "
+                "ignoring it.", extra_raw)
+            extra_raw = None
         return cls(
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
@@ -80,7 +92,9 @@ class ToolSearchConfig:
             listing=_tri_state(raw.get("listing", "auto")),
             listing_max_tokens=_clamped_int(raw.get("listing_max_tokens"), 4000, 200, 60000),
             defer_tools=(frozenset(str(n).strip() for n in defer_raw if str(n).strip())
-                         if isinstance(defer_raw, (list, tuple, set)) else None))
+                         if isinstance(defer_raw, (list, tuple, set)) else None),
+            defer_extra=(frozenset(str(n).strip() for n in extra_raw if str(n).strip())
+                         if isinstance(extra_raw, (list, tuple, set)) else frozenset()))
 
 
 _TRI_STATE_ALIASES = {"true": "on", "1": "on", "yes": "on", "false": "off", "0": "off", "no": "off"}
@@ -141,7 +155,8 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup"})
 
 # Event-triggered tools deferred BY DEFAULT (a catalog stub suffices). Keep the curated
 # list in DEFAULT_CONFIG so config discovery and runtime behavior cannot drift. An explicit
-# ``defer`` list replaces this wholesale ([] = everything eager). ``clarify`` is deliberately
+# ``defer`` list replaces this wholesale ([] = everything eager); ``defer_extra`` names
+# additional tools unioned on top of either. ``clarify`` is deliberately
 # absent: A/B showed deferring it collapsed structured-clarify usage (18/18 -> 7/18) — the
 # ask-the-user affordance must be ambient, a stub is not enough.
 _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])

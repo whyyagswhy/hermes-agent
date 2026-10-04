@@ -2030,6 +2030,10 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "apply_layout", "read_terminal", "read_window_below", "focus_pane",
             ],
+            # Additive extra deferrals, unioned with the curated ``defer`` default (or an
+            # explicit ``defer`` override) by tools/tool_search.py. Name cold built-ins here
+            # without copying the whole curated list; [] (the default) changes nothing.
+            "defer_extra": [],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

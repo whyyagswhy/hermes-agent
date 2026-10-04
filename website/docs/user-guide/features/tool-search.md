@@ -24,7 +24,9 @@ may be deferred when they are named in `tools.tool_search.defer`; the shipped
 curated list covers tools such as `computer_use`, `session_search`, and selected
 desktop helpers. MCP and non-core plugin tools remain eligible automatically.
 An explicit `defer` list replaces the curated list, and `defer: []` keeps every
-tool eager.
+tool eager. To defer *additional* tools without copying the whole curated list,
+name them in `defer_extra` — they are unioned on top of the curated default
+(or your explicit `defer` override).
 :::
 
 ## How it works
@@ -117,6 +119,8 @@ tools:
       - todo_list
       - process_manage
       - cronjob_manage
+    defer_extra:        # additive: unioned with the curated default (or your defer override)
+      - terminal
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed
@@ -132,6 +136,7 @@ shipped curated set; the runtime fallback uses the same value.
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 | `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `defer_extra` | `[]` | Additional tool names unioned on top of the curated default (or your explicit `defer` override). Use this to defer one more tool without copying the whole curated list; `[]` changes nothing. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.

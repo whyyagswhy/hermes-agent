@@ -75,6 +75,73 @@ class TestConfigParsing:
         assert cfg.search_default_limit <= cfg.max_search_limit
 
 
+class TestDeferExtraUnion:
+    """#132964(1): additive ``defer_extra`` unions with the curated default (or an
+    explicit ``defer`` override) instead of replacing it."""
+
+    def test_absent_means_empty_and_effective_is_curated_default(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        cfg = ToolSearchConfig.from_raw(None)
+        assert cfg.defer_extra == frozenset()
+        assert cfg.effective_defer_tools == configured
+
+    def test_extra_unions_with_curated_default(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        cfg = ToolSearchConfig.from_raw({"defer_extra": ["terminal"]})
+        assert cfg.defer_extra == frozenset({"terminal"})
+        assert cfg.effective_defer_tools == configured | {"terminal"}
+
+    def test_extra_unions_with_explicit_defer_override(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(
+            {"defer": ["terminal"], "defer_extra": ["read_file"]})
+        assert cfg.effective_defer_tools == {"terminal", "read_file"}
+
+    def test_empty_defer_plus_extra_defers_only_extras(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"defer": [], "defer_extra": ["terminal"]})
+        assert cfg.effective_defer_tools == {"terminal"}
+
+    def test_empty_extra_changes_nothing(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        assert (ToolSearchConfig.from_raw({"defer_extra": []}).effective_defer_tools
+                == configured)
+
+    def test_extra_strips_blanks_and_dedupes(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw(
+            {"defer": [], "defer_extra": ["  terminal  ", "", "   ", "terminal"]})
+        assert cfg.defer_extra == frozenset({"terminal"})
+        assert cfg.effective_defer_tools == {"terminal"}
+
+    def test_scalar_extra_warns_and_is_ignored(self, caplog):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig
+        configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
+        with caplog.at_level("WARNING", logger="tools.tool_search"):
+            assert (ToolSearchConfig.from_raw(
+                {"defer_extra": "terminal"}).effective_defer_tools == configured)
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    def test_config_fixture_assembly_unions_default_and_user_overlay(self):
+        """A user config file overlaying ``defer_extra`` on the shipped defaults
+        assembles to curated ∪ extras (the config-fixture path)."""
+        import copy
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from tools.tool_search import ToolSearchConfig
+        shipped = copy.deepcopy(DEFAULT_CONFIG["tools"]["tool_search"])
+        user_raw = dict(shipped)
+        user_raw["defer_extra"] = ["terminal"]
+        cfg = ToolSearchConfig.from_raw(user_raw)
+        assert cfg.effective_defer_tools == frozenset(shipped["defer"]) | {"terminal"}
+
+
 # ---------------------------------------------------------------------------
 # Classification — the hard invariant: core tools NEVER defer.
 # ---------------------------------------------------------------------------
