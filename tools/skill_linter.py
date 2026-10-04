@@ -49,6 +49,12 @@ _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat
 # Calibration: a deliberately curated large workflow skill sits near 50 topical files; the hoarding
 # shape this catches was 443 one-per-session files.
 _MAX_REFERENCE_FILES = 60
+# reference-toc: a reference file past this many lines needs a table of
+# contents up top so the agent jumps instead of scrolling the whole file.
+_REFERENCE_TOC_LINES = 100
+# A Contents heading or a same-page anchor-link list of at least this many
+# entries counts as a TOC; one or two links are usually just cross-refs.
+_TOC_ANCHOR_MIN = 3
 # oversized-body: SKILL.md is loaded whole by skill_view and then rides in context for every later
 # call of the session, so body size is paid per turn, not once. The authoring standard is ~200 lines;
 # this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
@@ -79,6 +85,28 @@ def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
     return re.sub(r"```.*?```", "", body, flags=re.S)
 
+
+_MD_LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def _has_toc(text):
+    # A Contents heading or a same-page anchor-link list counts as a TOC.
+    if re.search(r"^#{1,6}\s+(table of contents|contents)\b", text, re.M | re.I):
+        return True
+    return len(re.findall(r"\[[^\]]+\]\(#[^)]+\)", text)) >= _TOC_ANCHOR_MIN
+
+
+def _has_chained_reference(text):
+    # True when a reference doc links out to another file (a second hop).
+    if re.search(r"(references|templates|assets)/[\w./-]+", text):
+        return True
+    for target in _MD_LINK_RE.findall(text):
+        if target.startswith(("http://", "https://", "#", "mailto:")):
+            continue
+        path = target.split("#", 1)[0].split("?", 1)[0]
+        if path.endswith(".md"):
+            return True
+    return False
 
 def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -> Iterator[LintFinding]:
     name = str(frontmatter.get("name", "")).strip()
@@ -192,6 +220,27 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             yield _warn("references-sprawl",
                         f"{n_refs} files under references/; that is a per-session log, not topical depth. "
                         "Merge same-topic files into one rule set and drop incident narration.")
+        for ref in sorted(refs_dir.rglob("*.md")):
+            if any(part.startswith("_") for part in ref.parts):
+                continue
+            rel = ref.relative_to(skill_dir).as_posix()
+            try:
+                text = ref.read_text(encoding="utf-8-sig", errors="ignore")
+            except OSError:
+                continue
+            n_lines = len(text.splitlines())
+            if n_lines > _REFERENCE_TOC_LINES and not _has_toc(text):
+                yield _warn("reference-toc",
+                            f"'{rel}' is {n_lines} lines with no table of contents; add a '## Contents' "
+                            "section with anchor links up top so the agent can jump to the part it needs.")
+            if len(ref.relative_to(refs_dir).parts) > 1:
+                yield _warn("reference-depth",
+                            f"'{rel}' sits in a nested folder under references/; keep references one level "
+                            "deep (references/<topic>.md) so SKILL.md links straight to each file.")
+            elif _has_chained_reference(text):
+                yield _warn("reference-depth",
+                            f"'{rel}' links to another file; reference files must be one level deep - "
+                            "inline the rule or move the target up so SKILL.md reaches it directly.")
 
 
 def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:

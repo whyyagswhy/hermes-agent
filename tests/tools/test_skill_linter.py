@@ -217,3 +217,82 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     found = [f for f in lint_content(over) if f.rule == "oversized-body"]
     assert found and found[0].severity == WARNING
     assert "oversized-body" not in _rules(lint_content(under))
+
+
+def _ref_lines(n, prefix="Detail line"):
+    return "\n".join(f"{prefix} {i}." for i in range(n)) + "\n"
+
+
+TOC_HEAD = (
+    "# Guide\n\n## Contents\n\n"
+    "- [Setup](#setup)\n- [Usage](#usage)\n- [Pitfalls](#pitfalls)\n\n"
+    "## Setup\n\nSetup detail.\n\n## Usage\n\nUsage detail.\n\n"
+    "## Pitfalls\n\nPitfall detail.\n\n"
+)
+
+
+def _skill_with_refs(tmp_path, files):
+    from pathlib import Path  # local import: test helper only
+
+    skill_dir = Path(tmp_path) / "my-skill"
+    refs = skill_dir / "references"
+    refs.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(CLEAN)
+    for rel, text in files.items():
+        target = refs / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+    return skill_dir / "SKILL.md"
+
+
+def test_reference_toc_flagged_above_100_lines_without_toc(tmp_path):
+    from tools.skill_linter import _REFERENCE_TOC_LINES
+
+    skill_md = _skill_with_refs(
+        tmp_path, {"guide.md": "# Guide\n\n" + _ref_lines(_REFERENCE_TOC_LINES + 1)})
+    findings = lint_skill(skill_md)
+    assert "reference-toc" in _rules(findings)
+    assert all(f.severity == WARNING for f in findings if f.rule == "reference-toc")
+
+
+def test_reference_toc_ok_at_limit_or_with_toc(tmp_path):
+    from tools.skill_linter import _REFERENCE_TOC_LINES
+
+    skill_md = _skill_with_refs(tmp_path, {
+        "flat.md": "# Flat\n" + _ref_lines(_REFERENCE_TOC_LINES - 1),  # exactly at limit: fine
+        "guide.md": TOC_HEAD + _ref_lines(_REFERENCE_TOC_LINES + 50),  # long but navigable
+    })
+    assert "reference-toc" not in _rules(lint_skill(skill_md))
+
+
+def test_reference_depth_nested_subdir_flagged(tmp_path):
+    skill_md = _skill_with_refs(tmp_path, {
+        "flat.md": "# Flat\n\nShort.\n",
+        "layouts/bento.md": "# Bento\n\nShort.\n",
+    })
+    findings = lint_skill(skill_md)
+    assert "reference-depth" in _rules(findings)
+    assert all(f.severity == WARNING for f in findings if f.rule == "reference-depth")
+    nested = [f for f in findings if f.rule == "reference-depth"]
+    assert any("layouts/bento.md" in f.message for f in nested)
+
+
+def test_reference_depth_chained_link_flagged(tmp_path):
+    skill_md = _skill_with_refs(tmp_path, {
+        "a.md": "# A\n\nSee references/b.md for the rest.\n",
+        "b.md": "# B\n\nShort.\n",
+        "c.md": "# C\n\nSee [the other page](d.md) for detail.\n",
+        "d.md": "# D\n\nShort.\n",
+    })
+    findings = lint_skill(skill_md)
+    assert "reference-depth" in _rules(findings)
+
+
+def test_reference_depth_flat_unlinked_ok(tmp_path):
+    skill_md = _skill_with_refs(tmp_path, {
+        "a.md": "# A\n\nShort, links to [setup](#setup) only.\n",
+        "b.md": "# B\n\nShort.\n",
+    })
+    rules = _rules(lint_skill(skill_md))
+    assert "reference-depth" not in rules
+    assert "reference-toc" not in rules
