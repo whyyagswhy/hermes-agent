@@ -488,3 +488,33 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     assert syncs, "a supervised child booted on a stale dependency graph without syncing"
     assert completion_tail, "the tail armed by that sync was never finished"
     assert not venv_sync.completion_pending_path(root).is_file()
+
+
+def test_prepare_launch_refusal_names_holder_pid(tmp_path, monkeypatch):
+    """The venv-sync refusal must name the holder pid so the waiter can find it.
+
+    Claim 3 of #132879: `RuntimeError("an update is still running...")`
+    carried no pid. Uses a tmp HERMES_HOME marker owned by a live sleeper.
+    """
+    import subprocess
+    import time
+
+    import pm
+    from hermes_cli.update_lock import update_marker_path
+
+    root = _self_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(120)"],
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        marker = update_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{proc.pid}\n{int(time.time())}\n", encoding="utf-8")
+        with pytest.raises(RuntimeError) as exc:
+            venv_sync.prepare_launch(root, [])
+    finally:
+        proc.kill()
+        proc.wait()
+    assert str(proc.pid) in str(exc.value), "the refusal must name the holder pid"

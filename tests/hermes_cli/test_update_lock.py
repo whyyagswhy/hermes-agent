@@ -552,3 +552,36 @@ class TestAncestryUnderUnreadableProcesses:
 
         lock.release()
         assert marker.exists(), "the orchestrator still needs its marker"
+
+
+def test_concurrent_update_refusal_reaches_stderr(tmp_path, monkeypatch, capsys, other_pid):
+    """A refused `hermes update` must report the holder on stderr, not stdout alone.
+
+    Claim 3 of #132879: wherever only stderr is watched, the refusal was
+    invisible. stdout behavior is unchanged; stderr carries the same reason.
+    """
+    from types import SimpleNamespace
+
+    from hermes_cli import main
+    from hermes_cli.update_lock import UPDATE_EXIT_CONCURRENT, update_marker_path
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kwargs: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.update_owning_install.retarget_to_owning_install",
+        lambda root: None,
+    )
+    update_marker_path().write_text(f"{other_pid}\n{int(time.time())}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc:
+        main.cmd_update(SimpleNamespace(gateway=False))
+    assert exc.value.code == UPDATE_EXIT_CONCURRENT
+
+    captured = capsys.readouterr()
+    assert str(other_pid) in captured.out, "stdout refusal must keep naming the holder"
+    assert str(other_pid) in captured.err, "the refusal reason must also reach stderr"

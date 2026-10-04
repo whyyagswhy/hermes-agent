@@ -376,7 +376,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock, read_live_update
+    from hermes_cli.update_lock import UpdateLock, describe_holder, read_live_update
 
     current = pm.venv_is_current(project_root=root)
     from pm.environments import owning_home_root
@@ -403,7 +403,10 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     elif not owed_to_cli and (not current or pending.is_file()):
         lock = UpdateLock()
         if not lock.acquire():
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            holder = describe_holder(lock.holder)
+            raise RuntimeError(
+                "an update is still running; wait for it to exit, then relaunch Hermes" + "\n" + holder
+            )
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it
             # spawned owes no tail: that obligation is the updater's.
@@ -456,12 +459,15 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     import sys
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock
+    from hermes_cli.update_lock import UpdateLock, describe_holder
 
     if not current:
         lock = UpdateLock()
         if not lock.acquire():
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            holder = describe_holder(lock.holder)
+            raise RuntimeError(
+                "an update is still running; wait for it to exit, then relaunch Hermes" + "\n" + holder
+            )
         try:
             _sync_source_dependencies(root, arm=False, borrowed_from=owner)
         finally:
@@ -487,7 +493,12 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # Current post-sync verification children can boot under a live updater.
         legacy_markers = (root / ".update-incomplete", root / ".lazy-refresh-incomplete")
         if any(_marker_owner_is_live(marker) for marker in legacy_markers):
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            from hermes_cli.update_lock import describe_holder, read_live_update
+
+            holder = describe_holder(read_live_update())
+            raise RuntimeError(
+                "an update is still running; wait for it to exit, then relaunch Hermes" + "\n" + holder
+            )
         print("hermes: completing source-update dependencies...", file=sys.stderr, flush=True)
         completed = _tree_matches_completed_stamp(root)
         # ponytail: commit-only match; a product dir deleted by hand is rebuilt on demand

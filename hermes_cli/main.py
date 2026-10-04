@@ -2517,7 +2517,9 @@ def cmd_update(args):
 
     _update_lock = UpdateLock()
     if not _update_lock.acquire():
-        print(describe_holder(_update_lock.holder))
+        refusal = describe_holder(_update_lock.holder)
+        print(refusal)
+        print(refusal, file=sys.stderr)
         _finalize_update_output(_update_io_state)
         sys.exit(UPDATE_EXIT_CONCURRENT)
 
