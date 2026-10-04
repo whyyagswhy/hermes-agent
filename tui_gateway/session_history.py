@@ -289,6 +289,11 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
 
     messages = []
     tool_call_args = {}
+    # #132939: compaction archives the full tool-result row and carries a pruned
+    # copy forward under the same message_uid; the shared display dedupe keeps
+    # both (the archived output must survive in reads/exports -- #117750), so
+    # this resume projection collapses the pair itself, keeping the first copy.
+    seen_tool_uids = set()
     for m in history:
         if not isinstance(m, dict):
             continue
@@ -320,6 +325,11 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
             from agent.conversation_compression import _extract_steer_text_from_message
             content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
+            uid = m.get("message_uid")
+            if isinstance(uid, str) and uid:
+                if uid in seen_tool_uids:
+                    continue
+                seen_tool_uids.add(uid)
             tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
