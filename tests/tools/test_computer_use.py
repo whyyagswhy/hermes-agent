@@ -2022,6 +2022,29 @@ class TestElementTokenAttachment:
         _, args = backend._session.call_tool.call_args.args
         assert args["element_token"] == "s00000001:5"
 
+    def test_token_only_schema_drops_element_index(self):
+        """CUA 0.32.0 strict token-only action schemas omit element_index and disallow
+        additional properties: when the target schema advertises element_token but not element_index, the outgoing action must carry the token alone."""
+        backend = self._backend_with_session({})  # no capabilities[] at all — the modern shape
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) == ("click", "element_token")
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
+        assert "element_index" not in args
+
+    def test_dual_schema_keeps_element_index_alongside_token(self):
+        """Schemas advertising both properties keep the legacy index next to the token —
+        the bare-element_index [snapshot_id_required] path must keep working."""
+        backend = self._backend_with_session({})
+        backend._session.supports_input_property = lambda tool, prop: (tool, prop) in {
+            ("click", "element_token"), ("click", "element_index")}
+        backend._snapshot_tokens = {5: "s00000001:5"}
+        backend.click(element=5, button="left")
+        _, args = backend._session.call_tool.call_args.args
+        assert args["element_token"] == "s00000001:5"
+        assert args["element_index"] == 5
+
 
     def test_capture_refreshes_snapshot_tokens(self):
         """A fresh capture should overwrite any stale tokens from a
