@@ -122,11 +122,30 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
+# Session-bus/runtime endpoints that distinguish one native session seat from a
+# rebound one reusing the same DISPLAY number. Consulted only by desktop_identity;
+# the spawn env itself is untouched.
+_DESKTOP_IDENTITY_SESSION_KEYS = (
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "WAYLAND_DISPLAY",
+)
+
+
 def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
-    """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
-    cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
-    noticed — the cached cua-driver still points at the old seat or at no display at all."""
-    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+    """The screen a backend spawned from env acts on: its DISPLAY plus the native
+    session-bus/runtime endpoints behind it (empty display and no endpoints when
+    there is no screen). Recorded next to the cached backend so a Bot Desktop that
+    starts (or restarts on another number) AFTER the backend was cached is noticed,
+    and so a rebound native session that reuses the same DISPLAY with a fresh bus
+    retires the old backend instead of driving the wrong seat. Envs without any
+    session endpoint keep their historical DISPLAY-only identity byte-identical."""
+    src = cua_driver_child_env(env) if env is None else env
+    display = str(src.get("DISPLAY") or "")
+    session = "\x1f".join(str(src.get(key) or "") for key in _DESKTOP_IDENTITY_SESSION_KEYS)
+    if not session.strip("\x1f"):
+        return display
+    return f"{display}\x1e{session}"
 
 
 def backend_display_stale(recorded: str, current: str) -> bool:
