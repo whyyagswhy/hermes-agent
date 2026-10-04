@@ -26,7 +26,7 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     with (
         patch("gateway.shutdown_watchdog.logger.critical") as critical,
         patch(
-            "gateway.shutdown_watchdog.faulthandler.dump_traceback",
+            "gateway.shutdown_watchdog._write_watchdog_dump",
             side_effect=stop_during_dump,
         ) as dump,
         patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
@@ -41,7 +41,7 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
 
     assert not handle.is_alive()
     critical.assert_called_once()
-    dump.assert_called_once_with(all_threads=True)
+    dump.assert_called_once()
     assert exit_codes == []
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
@@ -336,3 +336,65 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
         "the loop made only %d tick(s) while the heartbeat was writing — "
         "the write is blocking the loop again" % ticks
     )
+
+def test_loop_liveness_watchdog_writes_dump_file_with_header(tmp_path):
+    """Liveness strike dump must land in the watchdog log file, not stderr only (#132879)."""
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    dump = tmp_path / "logs" / "gateway-shutdown-watchdog.log"
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog._mark_exited_quietly"),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1, dump_path=dump,
+        )
+        assert handle is not None
+        assert fired.wait(timeout=5.0), "watchdog did not fire"
+        handle.stop()
+        handle.join(timeout=2.0)
+
+    assert exit_codes == [75]
+    assert dump.is_file()
+    text = dump.read_text(encoding="utf-8")
+    assert "loop_liveness_watchdog" in text
+    assert "faulthandler dump" in text
+
+
+def test_loop_liveness_watchdog_defaults_dump_to_watchdog_log(tmp_path):
+    """Without dump_path the liveness dump still reaches the watchdog log file."""
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    dump = tmp_path / "logs" / "gateway-shutdown-watchdog.log"
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    with (
+        patch("gateway.shutdown_watchdog._mark_exited_quietly"),
+        patch(
+            "gateway.shutdown_watchdog.get_shutdown_watchdog_dump_path", return_value=dump,
+        ),
+        patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
+    ):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=1,
+        )
+        assert handle is not None
+        assert fired.wait(timeout=5.0), "watchdog did not fire"
+        handle.stop()
+        handle.join(timeout=2.0)
+
+    assert exit_codes == [75]
+    assert dump.is_file()
+    text = dump.read_text(encoding="utf-8")
+    assert "loop_liveness_watchdog" in text
+    assert "faulthandler dump" in text

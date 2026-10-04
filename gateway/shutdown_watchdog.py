@@ -89,6 +89,7 @@ def start_loop_liveness_watchdog(
     probe_timeout: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
     max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     exit_code: int = GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    dump_path: Optional[Path] = None,
 ) -> Optional[_LoopLivenessWatchdogHandle]:
     """Start an out-of-loop watchdog that hard-exits after missed probes. The caller
     (``GatewayRunner._start_loop_liveness_guards``) enforces the ``gateway.loop_watchdog: false``
@@ -128,10 +129,18 @@ def start_loop_liveness_watchdog(
                     "Gateway event loop missed %d consecutive liveness probes; dumping all thread "
                     "stacks and exiting with code %d so the service supervisor can restart it.",
                     strikes, exit_code)
-            try:
-                faulthandler.dump_traceback(all_threads=True)
-            except Exception:
-                logger.debug("Loop liveness faulthandler dump failed", exc_info=True)
+            with contextlib.suppress(Exception):  # file first (stderr is lost on detached runs)
+                target = dump_path if dump_path is not None else get_shutdown_watchdog_dump_path()
+                try:
+                    delay = float(probe_timeout)
+                except (TypeError, ValueError):
+                    delay = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
+                _write_watchdog_dump(
+                    target, delay_s=delay,
+                    snapshot={"reason": "loop_liveness_watchdog", "strikes": strikes,
+                              "exit_code": exit_code},
+                    event="loop_liveness_watchdog_fired",
+                )
             if stop_event.is_set():
                 return
             _mark_exited_quietly(exit_code, "loop_liveness_watchdog")
@@ -237,13 +246,14 @@ def resolve_shutdown_watchdog_delay(
 
 
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float,
-                         snapshot: Optional[Dict[str, Any]]) -> None:
+                         snapshot: Optional[Dict[str, Any]],
+                         event: str = "shutdown_watchdog_fired") -> None:
     """Best-effort faulthandler + metadata dump before hard-exit."""
     try:
         dump_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         return
-    header = {"event": "shutdown_watchdog_fired", "pid": os.getpid(), "delay_s": delay_s,
+    header = {"event": event, "pid": os.getpid(), "delay_s": delay_s,
               "fired_at": datetime.now(timezone.utc).isoformat(), "snapshot": snapshot or {}}
     with contextlib.suppress(Exception), open(dump_path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(header, default=str) + "\n--- faulthandler dump (all threads) ---\n")
