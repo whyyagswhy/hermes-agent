@@ -328,7 +328,7 @@ def skill_pending_diff(
         else:
             # Fold through the same matcher approve will run, so the preview can't
             # fabricate a result the approve path would reject (repeated anchor without
-            # replace_all, whitespace-only anchor, escape drift, old_string == new_string).
+            # replace_all, whitespace-only anchor, escape drift, old_string == new_string, non-exact match strategy).
             folded, patch_err = _fold_patch(current, old_s, new_s, payload.get("replace_all"))
             if patch_err:
                 return f"(patch would fail: {patch_err})"
@@ -345,7 +345,7 @@ def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = 
     """Fold one patch op through ``fuzzy_find_and_replace`` — the SAME matcher the approve
     path runs (``_patch_skill`` / ``apply_skill_pending``) — so a previewed diff is exactly
     what an approval would commit, and a patch approval would reject (repeated anchor with
-    ``replace_all`` unset, whitespace-only anchor, escape drift, ``old_string == new_string``)
+    ``replace_all`` unset, whitespace-only anchor, escape drift, ``old_string == new_string``, non-exact match strategy)
     renders as an explicit failed-patch note instead of a fabricated folded result.
 
     Returns ``(folded_content, None)`` or ``(base, error)``; base is returned unchanged on
@@ -354,10 +354,20 @@ def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = 
     without the tool chain (fuzzy_match is core-adjacent but guarded for safety anyway).
     """
     from tools.fuzzy_match import fuzzy_find_and_replace
-    folded, match_count, _strategy, error = fuzzy_find_and_replace(
+    folded, match_count, strategy, error = fuzzy_find_and_replace(
         base, old_string, str(new_string), bool(replace_all))
     if error or match_count == 0:
         return base, error or "Could not find a match for old_string in the file"
+    if strategy != "exact":
+        # Diff/approve agreement (#132822): the approve path only commits exact-anchor
+        # patches, so the preview must render the same rejection instead of a folded
+        # diff approval would never produce. Wording mirrors _patch_skill's approval
+        # error (kept as a parallel literal: write_approval must not import the tool
+        # chain at module level).
+        return base, (
+            f"Approved patch matched via the '{strategy}' strategy, not an exact anchor — "
+            "approval requires old_string copied verbatim from the file. Re-read the target "
+            "file and retry with the exact text.")
     return folded, None
 
 

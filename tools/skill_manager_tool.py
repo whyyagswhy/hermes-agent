@@ -483,13 +483,21 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
 
     # Use the same fuzzy matching engine as the file patch tool.
     from tools.fuzzy_match import fuzzy_find_and_replace
-    new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
+    new_content, match_count, strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all)
     if match_error:
         with suppress(Exception):
             from tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
+    if _skill_gate_bypass.get() and strategy != "exact":
+        # Approval replay (#132822): the reviewer approved the literal old_string, so a
+        # non-exact resolution may commit something they never saw. Fail loudly with the
+        # strategy named. Foreground patches keep the fuzzy ladder (matcher untouched).
+        return _err(
+            f"Approved patch matched via the '{strategy}' strategy, not an exact anchor — "
+            "approval requires old_string copied verbatim from the file. Re-read the target "
+            "file and retry with the exact text.") | {"file_preview": _clip(content, 500, "...")}
     if err := _validate_content_size(new_content, label=target_label):
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
