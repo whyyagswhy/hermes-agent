@@ -2283,3 +2283,39 @@ def test_openai_alias_without_base_url_pairs_openai_key_with_openai_base_url(mon
     runtime = rp.resolve_runtime_provider(requested="openai", target_model="gpt-x")
 
     assert (runtime["provider"], runtime["base_url"], runtime["api_key"]) == ("custom", "https://llm-proxy.corp.example/v1", "sk-proxy-issued")
+
+
+# ── #133137: a disabled provider raises a typed AuthError so fallback walkers advance ──
+
+def test_disabled_provider_raises_typed_auth_error(monkeypatch):
+    """providers.<name>.enabled: false must raise AuthError (provider + code), not
+    ValueError: the resolution-time fallback walkers only catch AuthError."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"providers": {"deepseek": {"enabled": False}}},
+    )
+    with pytest.raises(rp.AuthError) as excinfo:
+        rp.resolve_runtime_provider(requested="deepseek")
+    assert excinfo.value.provider == "deepseek"
+    assert excinfo.value.code == "provider_disabled"
+
+
+def test_disabled_primary_falls_back_to_chain(monkeypatch):
+    """A disabled primary walks fallback_providers instead of escaping as ValueError."""
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"providers": {"deepseek": {"enabled": False}}},
+    )
+    real_resolve = rp.resolve_runtime_provider
+
+    def fake_resolve(**kw):
+        if kw.get("requested") == "openai":
+            return {"provider": "openai", "api_key": "fb-key"}
+        return real_resolve(**kw)
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", fake_resolve)
+    config = {"fallback_providers": [{"provider": "openai", "model": "gpt-x"}]}
+
+    runtime, entry = rp.resolve_runtime_with_fallback(config, requested="deepseek")
+
+    assert (runtime["provider"], entry["model"]) == ("openai", "gpt-x")
