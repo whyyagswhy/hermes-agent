@@ -239,3 +239,52 @@ def test_quarantine_while_detach_waits_commits_nothing(tmp_path):
     finally:
         db.close()
         reset_storage_state(db_path)
+
+
+def test_rebuild_fts_survives_malformed_image_on_one_table(tmp_path):
+    """#133375 partial: ``database disk image is malformed`` surfaces as
+    ``sqlite3.DatabaseError`` (not ``OperationalError``), which must not abort the
+    per-table rebuild loop: the failed table rolls back and the remaining tables
+    still rebuild."""
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    try:
+        _seed(db)
+        with db._lock:
+            tables = db._present_fts_tables()
+        if len(tables) < 2:
+            pytest.skip("needs at least two present FTS tables")
+        failing = tables[0]
+        real_conn = db._conn
+
+        class _FlakyConn:
+            """Delegate everything except the failing table rebuild, which raises
+            the malformed-image DatabaseError; count rollbacks."""
+
+            def __init__(self):
+                self.rollbacks = 0
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith(f"INSERT INTO {failing}("):
+                    raise sqlite3.DatabaseError("database disk image is malformed")
+                return real_conn.execute(sql, *args, **kwargs)
+
+            def commit(self):
+                return real_conn.commit()
+
+            def rollback(self):
+                self.rollbacks += 1
+                return real_conn.rollback()
+
+            def __getattr__(self, name):
+                return getattr(real_conn, name)
+
+        flaky = _FlakyConn()
+        db._conn = flaky
+        try:
+            assert db.rebuild_fts() == len(tables) - 1
+            assert flaky.rollbacks >= 1
+        finally:
+            db._conn = real_conn
+    finally:
+        db.close()
