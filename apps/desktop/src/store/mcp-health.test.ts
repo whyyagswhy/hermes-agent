@@ -246,3 +246,20 @@ it('runs one follow-up when the active sweep fails through the handled config-er
   await flush()
   expect(mocks.getHermesConfigRecord).toHaveBeenCalledTimes(2)
 })
+
+it('does not toast when a first-sweep failure re-probes healthy', async () => {
+  const servers = { mcp_servers: { flaky: { url: 'https://mcp.flaky.example/mcp' } } }
+  mocks.getHermesConfigRecord.mockResolvedValue(servers)
+  mocks.testMcpServer
+    .mockRejectedValueOnce(new Error('ECONNREFUSED 127.0.0.1:3845'))
+    .mockResolvedValue({ ok: true, tools: [] })
+  window.localStorage.clear()
+
+  startMcpHealthChecker()
+  mocks.gatewayState.set('open')
+  await flush()
+  await flush()
+  await flush()
+  expect(mocks.testMcpServer).toHaveBeenCalledTimes(2)
+  expect(mocks.notify).not.toHaveBeenCalled()
+})

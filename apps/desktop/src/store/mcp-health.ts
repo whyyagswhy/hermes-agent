@@ -183,8 +183,35 @@ async function sweep(): Promise<void> {
 
     const key = probeKey(name, server, profileKey)
     let result = freshProbe(key)
+    // Only a live probe we just ran is eligible for the first-sweep
+    // re-probe below; a cached bad result was already confirmed by
+    // whichever surface probed it and must not be re-probed here.
+    let probedLive = false
 
     if (!result) {
+      try {
+        result = await testMcpServer(name)
+      } catch (err) {
+        result = { ok: false, error: err instanceof Error ? err.message : String(err), tools: [] } as McpTestResult
+      }
+
+      if (epoch !== sweepEpoch) {
+        return
+      }
+
+      probeCache.set(key, { at: Date.now(), result })
+      probedLive = true
+    }
+
+    // First sweep after launch races server startup: a healthy server can
+    // fail its very first probe and — with no transition memory yet — toast
+    // immediately. Re-probe a first-sighting failure once before notifying;
+    // a server that is really down fails twice and still nudges.
+    if (probedLive && classifyProbe(result) !== 'ok' && !lastStatus.has(`${profileKey}::${name}`)) {
+      if (epoch !== sweepEpoch || $gatewayState.get() !== 'open') {
+        return
+      }
+
       try {
         result = await testMcpServer(name)
       } catch (err) {
