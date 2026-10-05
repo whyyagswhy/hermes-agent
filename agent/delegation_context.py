@@ -109,12 +109,13 @@ def is_delegated_child_process_context() -> bool:
     return bool(_DELEGATED_CHILD_CONTEXT.get()) or bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER))
 
 
-def _fenced_kanban_root() -> str:
-    """The board root this process's Kanban lineage lives under (``kanban_home()``); ``"1"`` when it
-    cannot be resolved, which readers treat as "fence every board" (the pre-path marker)."""
+def _fenced_board_marker() -> str:
+    """This process's own board as a fence marker: ``boards/<slug>/`` for a named board,
+    the DB file itself for ``default`` (whose DB stays at ``<root>/kanban.db``); ``"1"``
+    when it cannot be resolved, which readers treat as "fence every board"."""
     try:
-        from hermes_cli.kanban_db import kanban_home
-        return str(kanban_home())
+        from hermes_cli import kanban_db as kb
+        return str(kb.own_board_fence_marker())
     except Exception:
         return "1"
 
@@ -126,23 +127,25 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     survives later execs, including scripts that remove TASK themselves. This is
     cooperative runtime scoping, not confinement of code with direct SQLite access.
 
-    The marker's value is the fenced board ROOT, so the fence applies to the lineage's
-    board and not to every Kanban DB the descendant touches: a child running a repro
-    against a temp ``HERMES_HOME`` got a silently read-only board there. An inherited
-    path-valued marker is kept (a grandchild that moved HERMES_HOME must not re-fence
-    onto its scratch root and unfence the real one).
+    The marker's value is the fenced board's own marker (``boards/<slug>/``, the DB
+    file itself for ``default``), so the fence applies to the lineage's board and not
+    to every Kanban DB the descendant touches: a child running a repro against a temp
+    ``HERMES_HOME`` got a silently read-only board there, and siblings under the same
+    home stay writable. An inherited path-valued marker is kept (a grandchild that
+    moved HERMES_HOME must not re-fence onto its scratch root and unfence the real one).
     """
     cleaned = {k: v for k, v in env.items() if k not in KANBAN_ENV_KEYS}
     inherited = str(env.get(DELEGATED_CHILD_ENV_MARKER) or "")
-    cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_kanban_root()
+    cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_board_marker()
     return cleaned
 
 
 def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
     """Whether Kanban mutations at *path* (a board DB or board-metadata root) are denied for this
     process: always for an in-process delegate child (the parent's own board); for a spawned
-    descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or lies under the
-    fenced root the marker carries. A legacy ``"1"`` marker fences everything."""
+    descendant only when *path* is the dispatcher-pinned ``HERMES_KANBAN_DB`` or equals / lies
+    under the fenced board marker the marker carries (the lineage's board dir, or its DB file
+    for ``default``). A legacy ``"1"`` marker fences everything."""
     if _DELEGATED_CHILD_CONTEXT.get():
         return True
     marker = os.environ.get(DELEGATED_CHILD_ENV_MARKER, "")
@@ -160,6 +163,17 @@ def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
     except ValueError:
         return False
     return True
+
+
+def kanban_structure_is_fenced() -> bool:
+    """Whether board-structure mutations (boards create/rename/remove/switch, the
+    current-board pointer) are denied for this process: always for an in-process
+    delegate child; for a spawned descendant whenever the marker is present. Unlike
+    :func:`kanban_path_is_fenced` this is not board-scoped — structure is global to
+    the home, so a descendant working on a sibling board still cannot reshape it."""
+    if _DELEGATED_CHILD_CONTEXT.get():
+        return True
+    return bool(os.environ.get(DELEGATED_CHILD_ENV_MARKER, ""))
 
 
 @overload

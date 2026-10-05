@@ -137,7 +137,9 @@ providers intentionally do not run during cron.
   must too, or every guard is silently off. Isolation is BETWEEN profiles; children inherit via
   `copy_context`; a child's `UnscopedSecretError` is a spawn-site bug, never grounds for an
   `os.getenv` fallthrough. Delegated children carry `delegation_context.py::
-  DELEGATED_CHILD_ENV_MARKER` valued as the fenced Kanban board root, not a bare flag.
+  DELEGATED_CHILD_ENV_MARKER` valued as the lineage's own board marker (`boards/<slug>/`,
+  the DB file for `default`), not a bare flag; board-structure writes stay denied via
+  `kanban_structure_is_fenced`.
 
 ## Tests
 

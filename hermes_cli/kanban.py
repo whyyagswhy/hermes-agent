@@ -224,11 +224,21 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     if action == "boards":
         if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
             return False
+        from agent.delegation_context import kanban_structure_is_fenced
+
+        return kanban_structure_is_fenced()
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
     from agent.delegation_context import kanban_path_is_fenced
 
-    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
+    # Check the REQUESTED board's DB (``--board``), resolved exactly as the handler
+    # resolves it: a descendant working on a sibling board must not trip on its
+    # lineage fence, while the ambient (lineage) resolution stays fenced.
+    try:
+        target = kb.kanban_db_path(board=getattr(args, "board", None))
+    except ValueError:
+        target = kb.kanban_db_path()
+    return kanban_path_is_fenced(target)
 
 
 def _joined_words(words) -> Optional[str]:

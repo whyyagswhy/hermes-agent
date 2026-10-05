@@ -140,14 +140,29 @@ def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> No
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
     out or import this module); the invariant lives here so every ``write_txn``
-    user and board-metadata mutator fails closed before touching durable state.
-    *path* is the board DB / metadata root being mutated; ``None`` means the
-    lineage's own board (``kanban_home()``).
+    user fails closed before touching durable state. *path* is the board DB /
+    metadata root being mutated; ``None`` means this process's own board marker
+    (:func:`own_board_fence_marker`). Board-structure mutators (create/rename/
+    remove/switch, the current pointer) use :func:`_assert_not_delegated_child_structure`
+    instead — structure is global, not board-scoped.
     """
     from agent.delegation_context import kanban_path_is_fenced
 
-    if kanban_path_is_fenced(kanban_home() if path is None else path):
+    if kanban_path_is_fenced(own_board_fence_marker() if path is None else path):
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
+
+
+def _assert_not_delegated_child_structure() -> None:
+    """Reject board-structure mutations (boards create/rename/remove/switch, the
+    current-board pointer) from ``delegate_task`` child contexts. Unlike
+    :func:`_assert_not_delegated_child_mutation` this is not board-scoped: even a
+    descendant working on a sibling board cannot reshape the home's structure."""
+    from agent.delegation_context import kanban_structure_is_fenced
+
+    if kanban_structure_is_fenced():
+        raise PermissionError(
+            "delegate_task child contexts cannot create, rename, remove or switch Kanban boards"
+        )
 
 
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
@@ -487,7 +502,7 @@ def get_current_board() -> str:
 def set_current_board(slug: str) -> Path:
     """Persist ``slug`` as the active board; returns the file written. Does NOT
     check the board exists — callers do (so ``boards switch <typo>`` errors)."""
-    _assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_structure()
     normed = _require_slug(slug)
     path = current_board_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -497,7 +512,7 @@ def set_current_board(slug: str) -> Path:
 
 def clear_current_board() -> None:
     """Remove ``<root>/kanban/current`` so the active board reverts to ``default``."""
-    _assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_structure()
     with contextlib.suppress(FileNotFoundError):
         current_board_path().unlink()
 
@@ -588,6 +603,29 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
+def own_board_fence_marker() -> Path:
+    """This process's own board as a descendant fence marker: ``boards/<slug>/`` for a
+    named board, the DB file itself for ``default`` (whose DB stays at
+    ``<root>/kanban.db``) or for a custom ``HERMES_KANBAN_DB`` path that maps to no
+    board dir. Resolves exactly like task traffic (:func:`kanban_db_path`), so the
+    marker a spawn stamps always names the board the parent was actually on."""
+    db = kanban_db_path()
+    try:
+        resolved = db.expanduser().resolve()
+        root = kanban_home().expanduser().resolve()
+    except OSError:
+        return db
+    if resolved == root / "kanban.db":
+        return resolved
+    try:
+        rel = resolved.relative_to(root / "kanban" / "boards")
+    except ValueError:
+        return resolved
+    if len(rel.parts) < 2 or not rel.parts[0] or rel.parts[0] == "_archived":
+        return resolved
+    return root / "kanban" / "boards" / rel.parts[0]
+
+
 def workspaces_root(board: Optional[str] = None) -> Path:
     """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
     ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
@@ -660,7 +698,7 @@ def write_board_metadata(
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
     "" = clear (``project_id`` is not validated here)."""
-    _assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_structure()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
     # db_path is derived on every read; never persist it into board.json.
@@ -692,6 +730,7 @@ def create_board(
     project_id: Optional[str] = None,
 ) -> dict:
     """Create board dir + DB + metadata (``mkdir -p`` semantics: existing board returns its metadata)."""
+    _assert_not_delegated_child_structure()
     normed = _require_slug(slug)
     meta = write_board_metadata(
         normed, name=name, description=description, icon=icon, color=color,
@@ -729,7 +768,7 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Archive (to ``boards/_archived/<slug>-<ts>/``) or delete a board;
     ``default`` cannot be removed. Returns ``{"slug", "action", "new_path"}``."""
-    _assert_not_delegated_child_mutation()
+    _assert_not_delegated_child_structure()
     normed = _require_slug(slug)
     if normed == DEFAULT_BOARD:
         raise ValueError("the 'default' board cannot be removed")

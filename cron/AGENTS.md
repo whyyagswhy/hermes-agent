@@ -140,9 +140,12 @@ recycled PID gets killed on reclaim.
   stop nudge resolve the task via `agent/delegation_context.py::owned_kanban_task()`; other readers
   pair their env read with `is_dispatcher_owned_worker_context()`.
 - **Descendant fence is a path, not a flag.** A delegated child's Kanban marker
-  (`agent/delegation_context.py::DELEGATED_CHILD_ENV_MARKER`) carries the fenced board ROOT;
+  (`agent/delegation_context.py::DELEGATED_CHILD_ENV_MARKER`) carries the lineage's own board
+  marker (`boards/<slug>/`, the DB file itself for `default`);
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`
-  or under that root, so a child working against a scratch `HERMES_HOME` keeps a writable board.
+  or on/under that marker, so a child working against a scratch `HERMES_HOME` — or a sibling
+  board under the same home — keeps a writable board. Board-structure verbs (create/rename/
+  remove/switch, the current pointer) stay denied via `kanban_structure_is_fenced()`.
 
 ## Tests
 
