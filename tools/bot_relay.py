@@ -613,15 +613,17 @@ def delivery_env(author: Optional[dict], profile_home: "str | Path | None" = Non
 
 # Two deliveries into the SAME profile must never run Bot Chat turns concurrently.
 # Deliveries are separate ``hermes`` subprocesses, so the lock is a per-profile
-# lockfile under ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly
-# the turn window; the kernel releases it on fd close (incl. process death), so a
-# crashed turn can never wedge the profile.
+# lockfile under ``<root>/bot_relay/locks/`` held with an OS file lock
+# (``fcntl.flock`` on POSIX, ``msvcrt.locking`` on Windows) for exactly the turn
+# window; the kernel releases it on fd close (incl. process death), so a crashed
+# turn can never wedge the profile. The lockfile itself is never deleted.
 
 
 # ── per-profile turn lock (#93091) ─────────────────────────────────────────── Two deliveries into the SAME
 # target profile must never run their Bot Chat turns concurrently: deliveries spawn separate ``hermes``
 # subprocesses, so an in-memory mutex is useless — the lock is a per-profile lockfile under
-# ``<root>/bot_relay/locks/`` held with ``fcntl.flock`` for exactly the turn execution window. flock is
+# ``<root>/bot_relay/locks/`` held with an OS file lock (``fcntl.flock`` on POSIX,
+# ``msvcrt.locking`` on Windows) for exactly the turn execution window. The lock is
 # released by the kernel when the holder's fd closes (including process death), so a crashed turn can never
 # wedge the profile. A queued delivery waits up to ``bot_mode.turn_wait_seconds`` and then fails with a
 # structured 'target_busy' refusal instead of blocking forever.
@@ -653,17 +655,60 @@ def turn_lock_path(root: Path | str, profile: str) -> Path:
     return relay_root(root) / LOCKS_DIR / f"{safe}.lock"
 
 
+def _turn_lock_backend() -> str | None:
+    """Turn-lock backend: ``'fcntl'`` on POSIX, ``'msvcrt'`` on Windows, ``None`` elsewhere."""
+    try:
+        import fcntl  # noqa: F401
+        return "fcntl"
+    except ImportError:
+        pass
+    try:
+        import msvcrt  # noqa: F401
+        return "msvcrt"
+    except ImportError:
+        return None
+
+
+def _turn_lock_take(fd: int, backend: str) -> None:
+    """Non-blocking exclusive take of the turn-lock *fd*; raises ``OSError`` while held."""
+    if backend == "msvcrt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        # LK_NBLCK raises on contention. The locked region must exist, so
+        # acquire_turn_lock pads the lockfile to one byte first — an empty
+        # file has no byte to range-lock.
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _turn_lock_drop(fd: int, backend: str) -> None:
+    """Release the turn-lock *fd* (the kernel also releases it on close/process death)."""
+    if backend == "msvcrt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 @contextlib.contextmanager
 def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | None = None) -> Iterator[Path]:
     """Hold ``profile``'s cross-process turn lock for the ``with`` body: non-blocking
-    flock probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
+    lock probe + short-sleep retry up to the budget (``bot_mode.turn_wait_seconds``
     unless ``timeout_seconds``); raises :class:`TurnBusyError` when exhausted. No
-    ordering among waiters, but every waiter is bounded. Without ``fcntl`` (Windows)
-    the lock is a no-op — those installs never had this race path."""
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover — Windows
-        logger.debug("bot turn lock disabled: fcntl unavailable on this platform")
+    ordering among waiters, but every waiter is bounded. The lock is a real OS
+    file lock on every platform (``fcntl.flock`` on POSIX, ``msvcrt.locking`` on
+    Windows); only platforms with neither (none supported) fall back to a no-op."""
+    backend = _turn_lock_backend()
+    if backend is None:  # pragma: no cover — every supported platform has one
+        logger.debug("bot turn lock disabled: neither fcntl nor msvcrt available")
         yield turn_lock_path(root, profile)
         return
 
@@ -672,11 +717,13 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
+        if backend == "msvcrt" and os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
         start = time.monotonic()
         deadline = start + budget
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _turn_lock_take(fd, backend)
                 break
             except OSError:
                 now = time.monotonic()
@@ -687,6 +734,6 @@ def acquire_turn_lock(root: Path | str, profile: str, timeout_seconds: float | N
             yield path
         finally:
             with contextlib.suppress(OSError):  # kernel releases on close anyway
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _turn_lock_drop(fd, backend)
     finally:
         os.close(fd)

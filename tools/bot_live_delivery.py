@@ -107,8 +107,42 @@ def _locked(home: Path | str):
         yield root
 
 
+# Contended exact-id reads: a ticket read colliding with another process's atomic
+# replace can fail access-denied (on Windows a sharing violation, winerror 32).
+# A replace hold is brief, so ride it out with a bounded retry; a hold that
+# outlasts the budget still fails closed — re-raised unchanged, never mistaken
+# for absent. The budget covers a realistic hold (~0.3 s) with margin, while a
+# stuck hold (~2 s) still surfaces promptly.
+_READ_RETRY_ATTEMPTS = 8
+_READ_RETRY_BASE_DELAY_S = 0.02
+_READ_RETRY_MAX_DELAY_S = 0.2
+
+
 def _read(path: Path) -> dict[str, Any] | None:
-    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
+    """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed).
+
+    A transient ``PermissionError`` (a replace landing mid-read) is retried on a
+    bounded budget — the reader-side twin of ``utils.atomic_replace``'s retry;
+    anything still failing is re-raised unchanged.
+    """
+    try:
+        return _read_once(path)
+    except PermissionError:
+        from agent.retry_utils import jittered_backoff
+
+        exc: PermissionError | None = None
+        for attempt in range(1, _READ_RETRY_ATTEMPTS + 1):
+            time.sleep(jittered_backoff(attempt, base_delay=_READ_RETRY_BASE_DELAY_S,
+                                        max_delay=_READ_RETRY_MAX_DELAY_S))
+            try:
+                return _read_once(path)
+            except PermissionError as retry_exc:
+                exc = retry_exc
+        assert exc is not None
+        raise exc
+
+
+def _read_once(path: Path) -> dict[str, Any] | None:
     try:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:

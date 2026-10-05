@@ -370,7 +370,8 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
     with contextlib.suppress(OSError):
         dm_dir = _dm_dir()
         locations.append((dm_dir, "*.txt"))
-        # Live-delivery intents (``<dm file>.live.json``, message plaintext included) outlive
+        # Transport pins (``<dm file>.live.json``: the live intent, or a CLI reservation;
+        # message plaintext included) outlive
         # their runner on purpose — a retry replays the same delivery id from them — so the
         # orphans of runners that never settled are swept here too.
         locations.append((dm_dir, "*.live.json"))
@@ -485,33 +486,120 @@ def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
 
 
+def _dm_file_stat(dm_file: "str | os.PathLike") -> list | None:
+    """Identity of this DM file incarnation, or None when it cannot be stated."""
+    try:
+        st = os.stat(dm_file)
+    except OSError:
+        return None
+    # No mtime: overwriting the payload after pinning must not retire the pin;
+    # only replacing the file (a new delivery reusing the path) does.
+    return [st.st_dev, st.st_ino]
+
+
+def _read_transport_pin(dm_file: "str | os.PathLike") -> dict | None:
+    """The winning transport pin for this DM file incarnation, or None.
+
+    A pin for a different incarnation (the path was reused after the winner
+    finished and the runner unlinked its file) is stale: unlinked, then
+    ignored, so the new payload selects freely. A pin the current DM file
+    cannot be compared against (already consumed) is honored: that payload
+    was executed, never run it again.
+    """
+    pin_path = Path(_live_intent_file(dm_file))
+    try:
+        pin = json.loads(pin_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return None
+    if isinstance(pin, dict):
+        want = pin.get("dm_stat")
+        if want is not None:
+            have = _dm_file_stat(dm_file)
+            if have is not None and have != want:
+                _unlink_dm_file(pin_path)
+                return None
+    return pin
+
+
+def _reserve_cli_transport(dm_file: "str | os.PathLike") -> bool:
+    """Atomically reserve the CLI transport for this payload; True iff this call won.
+
+    The reservation shares the live-intent file, so live admission and CLI
+    reservation race on a single ``O_EXCL`` creation: exactly one transport wins
+    per payload, and every losing runner sees the winner pin. Pins are swept
+    with the DM cache; the runner never removes them, so a late duplicate still
+    stands down after the winner finished.
+    """
+    from utils import fsync_directory
+
+    pin_path = Path(_live_intent_file(dm_file))
+    pin = {"transport": "cli", "delivery_id": _dm_delivery_id(dm_file),
+           "reserved_at": time.time_ns(), "pid": os.getpid(),
+           "dm_stat": _dm_file_stat(dm_file)}
+    try:
+        fd = os.open(pin_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(pin, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    fsync_directory(pin_path.parent)
+    return True
+
+
+def _stand_down_duplicate_runner(dm_file: "str | os.PathLike") -> int:
+    """A duplicate runner: another runner already owns this payload, execute nothing."""
+    print(json.dumps({"status": "duplicate", "delivery_id": _dm_delivery_id(dm_file),
+                      "detail": "Another delivery runner already selected a transport for this payload; "
+                                "it owns the outcome. Do NOT resend."}))
+    return 0
+
+
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
-    """Pin intent before admission; retries may inspect, never change transport."""
+    """Pin intent before admission; retries may inspect, never change transport.
+
+    Transport selection is atomic per payload: the pin file (``_live_intent_file``)
+    is created exactly once per DM file with ``O_EXCL``, carrying the winning
+    transport. A runner that loses the race reads the winner pin and honors
+    it: a live pin replays the same admission idempotently, while a CLI pin
+    returns None so the loser never admits a ticket that a competing CLI turn
+    is about to execute.
+    """
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
     from utils import fsync_directory
 
-    intent: dict[str, Any]
+    intent: dict[str, Any] | None
     intent_path = Path(_live_intent_file(dm_file))
-    if intent_path.exists():
-        intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
-    else:
-        assert profile_home is not None
+    intent = _read_transport_pin(dm_file)
+    if intent is None:
+        if profile_home is None:
+            return None
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
-                      delivery_id=_dm_delivery_id(dm_file),
+                      delivery_id=_dm_delivery_id(dm_file), transport="live",
+                      dm_stat=_dm_file_stat(dm_file),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
+            # Another runner pinned this payload first: honor the winner.
+            # None when the pin vanished under us — fall back to no live
+            # delivery and let the CLI reservation below decide, exactly once.
+            intent = _read_transport_pin(dm_file)
+            if intent is None:
+                return None
         else:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(intent, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
             fsync_directory(intent_path.parent)
+    elif intent.get("transport", "live") != "live":
+        # Another runner reserved the CLI transport for this payload: no ticket.
+        return None
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None:
@@ -608,6 +696,12 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     deliveries into one profile queue; a bounded wait ends in a 'target_busy' refusal.
     ``author`` rides to the child as HERMES_TURN_AUTHOR; ``hermes peer dm`` forwards it in the request body.
 
+    Transport selection is atomic per payload: the live pin and the CLI
+    reservation race on a single pin file, so two runners for one DM file can
+    never execute it through both transports. A runner that loses the race
+    honors the winner: joining the live wait when the winner went live,
+    otherwise standing down.
+
     Local (query-file) turns get one policy-gated retry (#93091 item 5): transient failures re-run the same
     session; a context_overflow re-run lets the retried turn's pre-API compaction pass compact the Bot Chat
     transcript first (agent/conversation_loop.py) — the sanctioned compression lever; no fresh session is
@@ -615,6 +709,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     gateway's deliver path, not here.
     """
     # The live consumer owns turn admission; never compete for its CLI lease.
+    home: Path | None = None
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
         if home is not None or os.path.exists(_live_intent_file(dm_file)):
@@ -625,12 +720,26 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                 return 1
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
+            if _read_transport_pin(dm_file) is not None:
+                # Another runner pinned this payload transport first: honor it.
+                return _stand_down_duplicate_runner(dm_file)
     try:
         from tools.bot_relay import delivery_env
 
         env = delivery_env(author, profile_home if not stdin_file else None)
         with _delivery_lock(argv, stdin_file=stdin_file):
             if not stdin_file:
+                if not _reserve_cli_transport(dm_file):
+                    # Lost the per-payload race while queueing: honor the winner.
+                    # Join the live wait when the winner went live, else stand down.
+                    try:
+                        record = _admit_live_dm(home, dm_file, author)
+                    except Exception as exc:
+                        print(_live_outcome_unknown(dm_file, exc))
+                        return 1
+                    if record is not None:
+                        return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
+                    return _stand_down_duplicate_runner(dm_file)
                 return _run_local_turn(argv, dm_file, env=env)
             # Keep the file open until the transport exits; cleanup occurs
             # after subprocess.run returns, not merely after stdin reaches EOF.
