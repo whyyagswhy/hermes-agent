@@ -335,6 +335,27 @@ def _tree_matches_completed_stamp(root: Path) -> bool:
     return info.commit == commit and not info.dirty
 
 
+def _install_stamp_unreadable(project_root: Path) -> bool:
+    """True when a stamp file exists that this process may not read (#133351).
+
+    A root-owned install's stamp is unreadable to a non-owner service user;
+    that permissions fact is neither a missing stamp (no birth-certificate
+    adopt) nor a corrupt stamp (no reinstall demand) — the launch defers to
+    the install owner instead.
+    """
+    from pm.paths import install_stamp_path
+
+    try:
+        install_stamp_path(Path(project_root)).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -367,6 +388,19 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None
     stamp = read_install_stamp(root)
     if not stamp:
+        if _install_stamp_unreadable(root):
+            # Root-owned install under a non-owner service user (#133351): the
+            # stamp (and the updateMechanism it carries) cannot be proven, so
+            # neither adopt a birth certificate nor mutate — surface the owed
+            # tail, if any, and leave the rest to the install owner.
+            pending = completion_pending_path(root)
+            if pending.is_file():
+                print(
+                    "hermes: a source update is unfinished; run `hermes update` "
+                    "as the install owner to finish it",
+                    file=sys.stderr, flush=True,
+                )
+            return None
         from hermes_cli.post_update import step_adopt_blessed_checkout
 
         step_adopt_blessed_checkout(root)
@@ -401,26 +435,37 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
     elif not owed_to_cli and (not current or pending.is_file()):
-        lock = UpdateLock()
-        if not lock.acquire():
-            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
-            # Under the launching update's own claim (its pid is our ancestor) a process it
-            # spawned owes no tail: that obligation is the updater's.
-            if not lock.acquired and read_live_update() is not None:
-                if current:
-                    return None
-                # A process the update spawns before its dependencies are current (a restarted
-                # gateway) would boot on a tree built for another interpreter. Sync — never the
-                # tail, which is the updater's — then relaunch below into a current install.
-                _sync_source_dependencies(root, arm=False)
-                if not pm.venv_is_current(project_root=root):
-                    # Relaunching would land back here and sync again, forever.
-                    raise RuntimeError("dependency sync left this install out of date")
-            else:
-                _finish_source_update(root, current=current, pending=pending)
-        finally:
-            lock.release()
+            refuse_foreign_owned_venv(root)
+        except RuntimeError as exc:
+            # Cross-user boot (a service user on a root-owned install): the sync
+            # and the tail are the owner's to run — leave them owed and boot
+            # what's there instead of failing the launch.
+            print(
+                f"hermes: {exc}; run `hermes update` as the install owner to finish it",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            lock = UpdateLock()
+            if not lock.acquire():
+                raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+            try:
+                # Under the launching update's own claim (its pid is our ancestor) a process it
+                # spawned owes no tail: that obligation is the updater's.
+                if not lock.acquired and read_live_update() is not None:
+                    if current:
+                        return None
+                    # A process the update spawns before its dependencies are current (a restarted
+                    # gateway) would boot on a tree built for another interpreter. Sync — never the
+                    # tail, which is the updater's — then relaunch below into a current install.
+                    _sync_source_dependencies(root, arm=False)
+                    if not pm.venv_is_current(project_root=root):
+                        # Relaunching would land back here and sync again, forever.
+                        raise RuntimeError("dependency sync left this install out of date")
+                else:
+                    _finish_source_update(root, current=current, pending=pending)
+            finally:
+                lock.release()
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")

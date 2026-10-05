@@ -193,3 +193,43 @@ def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkey
     for tools in (home / "tools", task / "tools", real, home / "tools"):
         assert launch(tools) == current
     assert len(staged) == 1
+
+
+def test_unreadable_install_stamp_fails_open_without_reinstall(tmp_path, monkeypatch):
+    """A stamp we may not read is not a corrupt stamp: no reinstall demand (#133351)."""
+    import errno
+
+    from pm import paths
+    from pm import runtime as pm_runtime
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    stamp = project / "install-stamp.json"
+    stamp.write_text(
+        json.dumps({"distribution": "docker", "pmRuntime": "/nowhere", "updateMechanism": "external"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "repo_root", lambda: project)
+    real_read_text = Path.read_text
+
+    def denied(self, *args, **kwargs):
+        if str(self) == str(stamp):
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    assert pm_runtime._resident_runtime() is None
+
+
+def test_corrupt_install_stamp_still_demands_reinstall(tmp_path, monkeypatch):
+    """A readable-but-garbage stamp keeps the fail-closed reinstall behavior."""
+    from pm import paths
+    from pm import runtime as pm_runtime
+    from pm.package import InstallError
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "install-stamp.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: project)
+    with pytest.raises(InstallError, match="reinstall this application"):
+        pm_runtime._resident_runtime()

@@ -280,6 +280,12 @@ def write_stamp(output: str | Path, **kwargs) -> dict:
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(stamp, indent=2) + "\n", encoding="utf-8")
+    try:
+        # Installs are commonly root-owned while service users only read the
+        # stamp (#133351): keep group/other readable whatever the umask was.
+        out_path.chmod(out_path.stat().st_mode | 0o444)
+    except OSError:
+        pass  # a read-only tree reports its own access error; keep the stamp
     return stamp
 
 

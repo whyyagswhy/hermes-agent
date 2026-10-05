@@ -104,3 +104,17 @@ def test_packaged_identity_never_falls_back_to_project_metadata(tmp_path, monkey
     )
 
     assert stamp["baseVersion"] == stamp["displayVersion"] == "1.2.3"
+
+
+def test_emitted_stamp_is_world_readable_even_under_strict_umask(tmp_path):
+    """A root-owned install stamp must stay readable to non-owner service users (#133351)."""
+    from scripts.write_install_stamp import write_stamp
+
+    old = os.umask(0o077)
+    try:
+        out = tmp_path / "install-stamp.json"
+        write_stamp(out, update_mechanism="self", commit="a" * 40, base_version="0.18.0", distance=0)
+    finally:
+        os.umask(old)
+    mode = out.stat().st_mode
+    assert mode & 0o044 == 0o044

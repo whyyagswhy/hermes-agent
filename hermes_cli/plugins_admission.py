@@ -62,9 +62,12 @@ def admit_plugin_set_change(
     plugin being admitted so a resolver conflict is reported against it (:class:`DependencyConflict`).
     """
     from hermes_constants import get_hermes_home
+    from hermes_cli.venv_sync import refuse_foreign_owned_venv
     from pm.client import sync_venv
+    from pm.paths import repo_root
     from pm.plugin_inputs import Selection
 
+    refuse_foreign_owned_venv(repo_root())
     home = Path(active_plugins_dir).parent if active_plugins_dir is not None else get_hermes_home()
     try:
         sync_venv(explicit=True, plugins=Selection({

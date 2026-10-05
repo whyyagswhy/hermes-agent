@@ -22,9 +22,12 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     skipped, so an unattended install carries that decision instead of being
     refused non-interactively."""
     from pm.client import sync_venv
+    from hermes_cli.venv_sync import refuse_foreign_owned_venv
+    from pm.paths import repo_root
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
+    refuse_foreign_owned_venv(repo_root())
     if require_consent and not assume_consent:
         from hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs

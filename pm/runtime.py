@@ -73,6 +73,12 @@ def _resident_runtime() -> tuple[Path, Path] | None:
             stamp = json.loads(stamp_path.read_text(encoding="utf-8-sig"))
         except FileNotFoundError:
             return None
+        except PermissionError:
+            # A root-owned install read by a non-owner service user (#133351):
+            # unreadable is not corrupt. Fail open like the steward's tolerant
+            # read — downstream ownership and pending-completion guards decide —
+            # and never demand a reinstall for a permissions fact.
+            return None
         except (OSError, ValueError) as exc:
             raise InstallError("pm-runtime", "invalid package install stamp", "reinstall this application") from exc
         if stamp.get("distribution") not in ("nix", "docker"):
