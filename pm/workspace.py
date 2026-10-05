@@ -62,9 +62,21 @@ def members_stamp(plugin_dirs) -> str:
     return h.hexdigest()
 
 
-def _copy_core_inputs(source: Path, destination: Path) -> None:
-    """Build from a writable snapshot, never from signed/read-only source."""
-    import fnmatch
+# Top-level entries a generation snapshot never carries: VCS state, local
+# environments, and build output. A root dist/ is build output, but below a
+# package root it is shipped: the managed environment runs from this snapshot
+# and serves bundled plugins' dashboard/dist/.
+_CORE_EXCLUDED = frozenset(
+    {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"})
+_CORE_NESTED_EXCLUDED = _CORE_EXCLUDED - {"dist"}
+
+
+def _core_selection(source: Path) -> tuple[set[str], set[str]]:
+    """``(package name patterns, root file names)`` the snapshot copies.
+
+    Shared by the copier and the stamp so the stamp can never drift from what
+    the venv actually builds from.
+    """
     import tomllib
 
     metadata = tomllib.loads((source / "pyproject.toml").read_text(encoding="utf-8-sig"))
@@ -81,19 +93,89 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
     for pattern in project.get("license-files", []):
         files.update(str(p.relative_to(source)) for p in source.glob(pattern))
     files.update(p.name for p in source.glob("*.py"))
+    return package_roots, files
+
+
+def core_stamp(source: Path) -> str:
+    """Digest of the core source a generation builds from.
+
+    The venv stamp folds this in so a source edit invalidates the sync
+    shortcut: without it only uv.lock/extras/python/members moved the stamp
+    and a post-source-change sync was a no-op. Selection mirrors
+    ``_copy_core_inputs`` exactly (same patterns, same ignores, symlinks
+    skipped); traversal is sorted so identical trees hash identically. A
+    source without a readable pyproject stamps as empty — nothing buildable
+    lives there. Unreadable files are skipped: the stamp feeds the
+    every-startup currency check and must never crash it.
+    """
+    import fnmatch
+
+    h = hashlib.sha256()
+    source = Path(source).resolve()
+    try:
+        package_roots, files = _core_selection(source)
+    except (OSError, ValueError):
+        return h.hexdigest()
+    for name in sorted(files):
+        entry = source / name
+        try:
+            if not entry.is_file() or entry.is_symlink():
+                continue
+            if not entry.resolve().is_relative_to(source):
+                continue
+            h.update(name.encode("utf-8"))
+            h.update(b"\0")
+            h.update(entry.read_bytes())
+            h.update(b"\0")
+        except OSError:
+            continue
+    try:
+        top = sorted(source.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return h.hexdigest()
+    for entry in top:
+        if not (entry.is_dir() and not entry.is_symlink()):
+            continue
+        if entry.name in _CORE_EXCLUDED or entry.name.startswith("."):
+            continue
+        if not any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots):
+            continue
+        for directory, dirs, filenames in os.walk(entry):
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in _CORE_NESTED_EXCLUDED and not name.startswith(".")
+                and not name.endswith(".egg-info")
+                and not (Path(directory) / name).is_symlink()
+            )
+            for filename in sorted(filenames):
+                path = Path(directory) / filename
+                if (filename in _CORE_NESTED_EXCLUDED or filename.startswith(".")
+                        or filename.endswith(".egg-info") or path.is_symlink()):
+                    continue
+                try:
+                    h.update(path.relative_to(source).as_posix().encode("utf-8"))
+                    h.update(b"\0")
+                    h.update(path.read_bytes())
+                    h.update(b"\0")
+                except OSError:
+                    continue
+    return h.hexdigest()
+
+
+def _copy_core_inputs(source: Path, destination: Path) -> None:
+    """Build from a writable snapshot, never from signed/read-only source."""
+    import fnmatch
+
+    package_roots, files = _core_selection(source)
 
     # uv.lock is not excluded: the root lock is never copied (only ``files`` are; lock_and_sync
     # seeds or resolves it), and pm/uv.lock is the PM runtime's input (pm/runtime.py::_inputs).
-    excluded = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", "release"}
-    # A root dist/ is build output, but below a package root it is shipped: the managed
-    # environment runs from this snapshot and serves bundled plugins' dashboard/dist/.
-    nested_excluded = excluded - {"dist"}
     def ignore(directory, names):
-        return [name for name in names if name in nested_excluded or name.startswith(".")
+        return [name for name in names if name in _CORE_NESTED_EXCLUDED or name.startswith(".")
                 or name.endswith(".egg-info") or (Path(directory) / name).is_symlink()]
 
     for entry in source.iterdir():
-        if (entry.is_dir() and not entry.is_symlink() and entry.name not in excluded
+        if (entry.is_dir() and not entry.is_symlink() and entry.name not in _CORE_EXCLUDED
                 and not entry.name.startswith(".") and entry.resolve() != destination.resolve()
                 and any(fnmatch.fnmatchcase(entry.name, pattern) for pattern in package_roots)):
             target = destination / entry.name

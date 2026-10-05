@@ -349,7 +349,7 @@ def uv_cache_dir() -> Path:
 
 @register
 class Venv(StatePackage):
-    """The project venv: pyproject.toml + uv.lock + enabled extras.
+    """The project venv: core source + pyproject.toml + uv.lock + enabled extras.
     Made true by `uv sync --frozen`; uv is its internal dependency."""
 
     name = "venv"
@@ -385,9 +385,12 @@ class Venv(StatePackage):
         h.update(json.dumps(python).encode())
         # Plugin members union into the venv — a changed member set must
         # re-sync even when extras and core lock are unchanged.
-        from pm.workspace import enabled_member_dirs, members_stamp
+        from pm.workspace import core_stamp, enabled_member_dirs, members_stamp
 
         h.update(members_stamp(enabled_member_dirs() if plugin_dirs is None else plugin_dirs).encode())
+        # Core source builds into the venv too — a changed core must re-sync
+        # even when the lock, extras, and members are unchanged.
+        h.update(core_stamp(self.project_root()).encode())
         return h.hexdigest()
 
     def apply(self, extras: list[str], *, plugin_dirs=None, repair: bool = False, explicit: bool = False,

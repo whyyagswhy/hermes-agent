@@ -282,3 +282,46 @@ def test_nested_dist_travels_but_root_dist_stays_out(tmp_path):
 
     assert (destination / "plugins/kanban/dashboard/dist/index.js").read_text(encoding="utf-8") == "ENTRY\n"
     assert not (destination / "dist").exists(), "root build output never enters the snapshot"
+
+
+def _stampable_core(root):
+    """Minimal core source: a pyproject with one package root plus a root uv.lock."""
+    root.mkdir()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname="stamp-core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["stamp_pkg"]\n',
+        encoding="utf-8",
+    )
+    (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    package = root / "stamp_pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+    return root
+
+
+def test_core_stamp_stable_for_identical_tree(tmp_path):
+    """Same bytes, same stamp: the every-startup check must not flap."""
+    first = _stampable_core(tmp_path / "first")
+    assert workspace.core_stamp(first) == workspace.core_stamp(first)
+    second = _stampable_core(tmp_path / "second")
+    assert workspace.core_stamp(first) == workspace.core_stamp(second)
+
+
+def test_core_stamp_flips_on_source_add_or_edit(tmp_path):
+    before = workspace.core_stamp(_stampable_core(tmp_path / "core"))
+    core = tmp_path / "core"
+    (core / "stamp_pkg" / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert workspace.core_stamp(core) != before
+    edited = workspace.core_stamp(core)
+    (core / "stamp_pkg" / "added.py").write_text("ADDED = True\n", encoding="utf-8")
+    assert workspace.core_stamp(core) != edited
+
+
+def test_venv_stamp_flips_on_core_source_change(tmp_path):
+    """Defect 1: post-source-change sync was a no-op; the stamp ignored core source."""
+    from pm.packages import Venv
+
+    core = _stampable_core(tmp_path / "core")
+    before = Venv(core).expected_stamp([], plugin_dirs=[])
+    (core / "stamp_pkg" / "__init__.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert Venv(core).expected_stamp([], plugin_dirs=[]) != before
