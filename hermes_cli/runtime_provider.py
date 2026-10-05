@@ -834,6 +834,75 @@ def _anthropic_env_runtime(requested_provider: str, model_cfg: Dict[str, Any], t
     return _runtime("anthropic", "anthropic_messages", base_url, token, source="env", requested_provider=requested_provider)
 
 
+# ── config base_url plausibility for registry api_key providers ───────────────────────────────────────────────────────────────────────────────────────────
+
+
+# Documented same-vendor mirrors, keyed by registry provider id. The canonical
+# inference_base_url is always plausible without listing; literals below mirror the
+# auth-layer sources named in comments.
+_API_KEY_PROVIDER_DOCUMENTED_MIRRORS: Dict[str, tuple] = {
+    # MiniMax global <-> China (the api.minimaxi.com China endpoint under provider: minimax).
+    "minimax": ("https://api.minimaxi.com/anthropic",),
+    "minimax-cn": ("https://api.minimax.io/anthropic",),
+    # Kimi Moonshot global <-> China + the Kimi Code endpoint (hermes_cli/auth_zai_kimi.py).
+    "kimi-coding": ("https://api.moonshot.cn/v1", "https://api.kimi.com/coding"),
+    "kimi-coding-cn": ("https://api.moonshot.ai/v1", "https://api.kimi.com/coding"),
+    # Z.AI global/CN x general/coding-plan endpoints (ZAI_ENDPOINTS in hermes_cli/auth_zai_kimi.py).
+    "zai": (
+        "https://open.bigmodel.cn/api/paas/v4",
+        "https://api.z.ai/api/coding/paas/v4",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+    ),
+    # StepFun Step Plan intl <-> CN (hermes_cli/auth_constants.py).
+    "stepfun": ("https://api.stepfun.com/step_plan/v1",),
+}
+
+
+def _normalize_endpoint_url(url: str) -> str:
+    return str(url or "").strip().rstrip("/").lower()
+
+
+def _api_key_provider_cfg_base_url(provider: str, pconfig, model_cfg: Dict[str, Any]) -> str:
+    """Model base_url for a registry api_key provider, or empty when absent or implausible.
+
+    A stale base_url kept across a provider switch would otherwise redirect this
+    provider's credential onto another vendor's endpoint: honour the configured URL only
+    when it plausibly belongs to the provider -- its canonical inference_base_url, a
+    documented same-vendor mirror above, an openrouter.ai mirror (a deliberate proxy per
+    #10622, never a stale redirect), or an unrecognized custom/proxy/loopback URL such as
+    a self-hosted LM Studio. A URL naming another registered provider's endpoint falls
+    back to the credential/env resolution. Generalizes _anthropic_cfg_base_url.
+
+    The explicit --base-url rung (_explicit_api_key_provider) is unaffected: an explicit
+    caller override is intent, not stale config. Provider openrouter keeps any config
+    base_url for the same reason (#10622).
+    """
+    cfg_url = _config_base_url_for_provider(model_cfg, provider)
+    if not cfg_url:
+        return ""
+    norm_provider = (provider or "").strip().lower()
+    if norm_provider == "openrouter":
+        return cfg_url
+    norm = _normalize_endpoint_url(cfg_url)
+    own = {_normalize_endpoint_url(pconfig.inference_base_url)} if pconfig else set()
+    own |= {_normalize_endpoint_url(u)
+            for u in _API_KEY_PROVIDER_DOCUMENTED_MIRRORS.get(norm_provider, ())}
+    own.discard("")
+    if norm in own:
+        return cfg_url
+    if base_url_host_matches(cfg_url, "openrouter.ai"):
+        return cfg_url
+    known = {_normalize_endpoint_url(pc.inference_base_url) for pc in PROVIDER_REGISTRY.values()
+             if pc.inference_base_url}
+    for urls in _API_KEY_PROVIDER_DOCUMENTED_MIRRORS.values():
+        known |= {_normalize_endpoint_url(u) for u in urls}
+    if norm in known:
+        logger.info("Ignoring stale model.base_url for provider '%s' (another provider endpoint).",
+                    provider)
+        return ""
+    return cfg_url
+
+
 def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, target_model) -> Dict[str, Any]:
     """Registry ``api_key`` providers (z.ai/GLM, Kimi, MiniMax, copilot, …) from env/config."""
     creds = resolve_api_key_provider_credentials(provider)
@@ -848,8 +917,10 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     if not has_usable_secret(creds.get("api_key")):
         hint = f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else ""
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
-    # Honour model.base_url when the configured provider matches (e.g. api.minimaxi.com China endpoint).
-    base_url = _actual_url(provider, _config_base_url_for_provider(model_cfg, provider) or creds.get("base_url", "").rstrip("/"))
+    # Honour a plausible model.base_url when the configured provider matches (e.g. api.minimaxi.com
+    # China endpoint); a stale URL naming another vendor endpoint falls back to the credential.
+    base_url = _actual_url(provider, _api_key_provider_cfg_base_url(provider, pconfig, model_cfg)
+                           or creds.get("base_url", "").rstrip("/"))
     api_mode = _api_key_provider_api_mode(provider, model_cfg, creds.get("api_key", ""), base_url,
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
