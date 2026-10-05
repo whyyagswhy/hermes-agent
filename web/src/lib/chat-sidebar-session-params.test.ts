@@ -28,6 +28,11 @@ describe("sidecarSessionCreateParams", () => {
     expect(params.profile).toBe("work");
   });
 
+  it("marks the session as a sidecar so the gateway skips memory init", () => {
+    const params = sidecarSessionCreateParams();
+    expect(params.sidecar).toBe(true);
+  });
+
   it("omits profile when undefined", () => {
     const params = sidecarSessionCreateParams();
     expect(params).not.toHaveProperty("profile");

@@ -131,6 +131,9 @@ class SessionCreateParams(ProfileParams):
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
     service_tier: str | None = None
     close_on_disconnect: bool = False
+    # Dashboard sidecar sessions never take a turn: the gateway skips
+    # memory provider init for their throwaway agent.
+    sidecar: bool = False
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False

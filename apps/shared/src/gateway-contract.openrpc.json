@@ -29804,6 +29804,11 @@
             "title": "Close On Disconnect",
             "type": "boolean"
           },
+          "sidecar": {
+            "default": false,
+            "title": "Sidecar",
+            "type": "boolean"
+          },
           "hidden": {
             "default": false,
             "title": "Hidden",

@@ -20127,6 +20127,38 @@ def test_session_create_records_source(monkeypatch):
         server._sessions.clear()
 
 
+def test_session_create_records_sidecar_flag(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"sidecar": True}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["sidecar"]
+        plain = server.handle_request(
+            {"id": "2", "method": "session.create", "params": {}}
+        )["result"]["session_id"]
+        assert not server._sessions[plain].get("sidecar")
+    finally:
+        server._sessions.clear()
+
+
+def test_sidecar_deferred_build_skips_memory():
+    record = server._deferred_session_record(
+        "key", cols=80, cwd="/tmp", history=[], lease=None, sidecar=True)
+    assert server._deferred_build_agent_kwargs(record, None)["skip_memory"] is True
+    plain = server._deferred_session_record(
+        "key", cols=80, cwd="/tmp", history=[], lease=None)
+    assert not server._deferred_build_agent_kwargs(plain, None).get("skip_memory")
+
+
+def test_make_agent_sidecar_skips_memory(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    server._make_agent("sid", "session-key", skip_memory=True)
+    assert captured["skip_memory"] is True
+
+
 def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(

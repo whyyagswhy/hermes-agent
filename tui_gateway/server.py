@@ -1024,6 +1024,9 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
           "platform_override": _session_source(current), "cwd_override": _session_cwd(current)}
+    if current.get("sidecar"):
+        # Dashboard sidecar sessions never take a turn: skip memory provider init.
+        kw["skip_memory"] = True
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
@@ -2638,7 +2641,8 @@ def _make_agent(
     model_override: dict | str | None = None, provider_override: str | None = None,
     reasoning_config_override: dict | None = None, service_tier_override: str | None = None,
     platform_override: str | None = None, context_cwd_is_launch_artifact: bool | None = None,
-    cwd_override: str | None = None, auth_user_id: str | None = None):
+    cwd_override: str | None = None, auth_user_id: str | None = None,
+    skip_memory: bool = False):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
@@ -2685,7 +2689,8 @@ def _make_agent(
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
-        skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        skip_context_files=ignore_rules, skip_memory=(ignore_rules or skip_memory),
+        fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
         request_overrides=runtime.get("request_overrides"),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
@@ -2841,7 +2846,8 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
 
 def _deferred_session_record(
     session_key: str, *, cols: int, cwd: str, history: list, lease, source: str = "tui",
-    close_on_disconnect: bool = False, display_history_prefix: list | None = None,
+    close_on_disconnect: bool = False, sidecar: bool = False,
+    display_history_prefix: list | None = None,
     profile_home: Path | None = None, lazy: bool = False, model_override=None,
     resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
     explicit_cwd: bool = False) -> dict:
@@ -2858,7 +2864,7 @@ def _deferred_session_record(
         "profile_home": str(profile_home) if profile_home is not None else None,
         "resume_runtime_overrides": resume_runtime_overrides, "resume_session_id": session_key,
         "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
-        "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
+        "slash_worker": None, "sidecar": sidecar, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
         "auth_user_id": _transport_auth_user_id(current_transport()),

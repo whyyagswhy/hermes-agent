@@ -2948,6 +2948,7 @@ export interface SessionCreateParams {
   fast?: boolean | null
   service_tier?: string | null
   close_on_disconnect?: boolean
+  sidecar?: boolean
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
