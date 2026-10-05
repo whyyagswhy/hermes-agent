@@ -152,17 +152,24 @@ def _configured_catalog_provider(
 ) -> Optional[str]:
     """``catalog_provider`` declared on a custom provider's ``providers.<name>`` row (or legacy
     ``custom_providers[]`` entry): the catalogued vendor whose models it resells. None when unset."""
-    name = (provider or "").strip()
-    if name.lower().startswith("custom:"):
-        name = name[len("custom:"):]
-    if not name or name in PROVIDER_TO_MODELS_DEV:
+    raw = (provider or "").strip()
+    is_custom = raw.lower().startswith("custom:")
+    name = raw[len("custom:"):].strip() if is_custom else raw
+    if not name:
         return None
-    provider_config = (
-        _cfg_get("providers", name, default=None, config=config)
-        if config is not None
-        else _cfg_get("providers", name, default=None)
-    )
-    alias = _dict_or_empty(provider_config).get("catalog_provider")
+    if not is_custom and name in PROVIDER_TO_MODELS_DEV:
+        return None
+    alias = None
+    candidates = ([raw] if is_custom and raw not in (f"custom:{name}", name) else []) + [f"custom:{name}", name]
+    for key in dict.fromkeys(candidates):
+        provider_config = (
+            _cfg_get("providers", key, default=None, config=config)
+            if config is not None
+            else _cfg_get("providers", key, default=None)
+        )
+        alias = _dict_or_empty(provider_config).get("catalog_provider")
+        if alias:
+            break
     if not alias:
         legacy = (
             _cfg_get("custom_providers", default=None, config=config)
@@ -170,7 +177,7 @@ def _configured_catalog_provider(
             else _cfg_get("custom_providers", default=None)
         )
         alias = next((e.get("catalog_provider") for e in (legacy if isinstance(legacy, list) else [])
-                      if isinstance(e, dict) and str(e.get("name") or "").strip() == name), None)
+                      if isinstance(e, dict) and str(e.get("name") or "").strip() in (name, f"custom:{name}", raw)), None)
     alias = str(alias or "").strip()
     return alias or None
 
