@@ -46,6 +46,15 @@ export function defaultNewSessionTarget(): { profile: string; route: AgentProfil
 }
 
 export function prepareDefaultNewSession(): void {
+  // A generic New Session must never inherit a stale explicit owner pin (a
+  // gateway-group `+`, a tab-strip `+`, or another connection's draft left
+  // $newChatRoute behind). Drop it first: the saved default below either
+  // re-pins, or the window's selected source wins. Callers already cleared
+  // $newChatProfile; re-anchor the captured source to the active connection
+  // so no half of the old (connection, profile) pair survives.
+  $newChatRoute.set(null)
+  captureNewChatSource()
+
   const target = defaultNewSessionTarget()
 
   if (!target) {

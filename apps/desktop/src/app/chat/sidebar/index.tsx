@@ -78,6 +78,7 @@ import {
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
+  $newChatRoute,
   $profileColors,
   $profiles,
   $profileScope,
@@ -1635,9 +1636,11 @@ export function ChatSidebar({
                       // A plain new session lands in whatever profile the live
                       // gateway is on (= the active switcher context). null →
                       // no swap. The switcher header is the single place to
-                      // change which profile that is.
+                      // change which profile that is. Also drop any stale explicit
+                      // owner pin so the draft lands on the live connection.
                       if (isNewSession) {
                         $newChatProfile.set(null)
+                        $newChatRoute.set(null)
                       }
 
                       if (item.keybindActionId) {
@@ -1662,6 +1665,7 @@ export function ChatSidebar({
 
                       startNewSessionDrag(placement => {
                         $newChatProfile.set(null)
+                        $newChatRoute.set(null)
                         onNewSessionSplit(placement.dir, { anchor: placement.anchor, before: placement.before })
                       }, event)
                     }}
@@ -1712,6 +1716,7 @@ export function ChatSidebar({
                             label={s.row.openInSplit}
                             onSplit={dir => {
                               if (isNewSession) {
+                                $newChatRoute.set(null)
                                 onNewSessionSplit(dir)
                               } else if (item.route) {
                                 openRouteTile(item.route, dir)

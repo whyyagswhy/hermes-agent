@@ -55,6 +55,7 @@ import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
   $newChatProfile,
+  $newChatRoute,
   $profiles,
   $showAllProfiles,
   type AgentProfileRoute,
@@ -1059,6 +1060,10 @@ export function useSessionActions({
   const selectSidebarItem = useCallback(
     (item: SidebarNavItem) => {
       if (item.action === 'new-session') {
+        // Generic entry: a stale explicit owner pin (another connection's
+        // gateway-group `+` or draft) must not follow into this draft.
+        // prepareDefaultNewSession re-pins the saved default, if any.
+        $newChatRoute.set(null)
         prepareDefaultNewSession()
         setWorkspaceScope('sessions')
         startFreshSessionDraft()

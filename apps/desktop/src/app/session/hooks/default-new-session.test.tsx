@@ -306,4 +306,41 @@ describe('generic new session default routing', () => {
     })
     expect(requestGateway).not.toHaveBeenCalled()
   })
+
+  it('drops a stale explicit owner pin on a generic new session', async () => {
+    $newChatRoute.set({ connectionId: 'stale-peer', profile: 'other' })
+    $newChatProfile.set(null)
+    $newChatConnectionId.set('stale-peer')
+    const { result } = mountActions()
+    act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    expect($newChatRoute.get()).toBeNull()
+    await act(() => result.current.createBackendSessionForSend('hello'))
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'previous',
+      'other',
+      'session.create',
+      expect.objectContaining({ profile: 'other' }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+    expect(getSessionOwnerHint('created-stored')).toEqual({ connectionId: 'previous', profile: 'other' })
+  })
+
+  it('drops a stale explicit owner pin on /new', async () => {
+    $newChatRoute.set({ connectionId: 'stale-peer', profile: 'other' })
+    $newChatProfile.set(null)
+    $newChatConnectionId.set('stale-peer')
+    const { result } = mountActions()
+    const slash = mountSlashCommand(result.current.startFreshSessionDraft)
+    await act(() => slash.result.current('/new'))
+    expect($newChatRoute.get()).toBeNull()
+    expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'previous', profile: 'other' })
+  })
+
+  it('re-pins the saved default over a stale explicit pin', async () => {
+    $newChatRoute.set({ connectionId: 'stale-peer', profile: 'stale' })
+    const { result } = mountActions()
+    await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
+    act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+    expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
+  })
 })
