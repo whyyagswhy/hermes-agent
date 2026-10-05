@@ -73,6 +73,9 @@ interface SkillsTabProps {
   skills: SkillInfo[]
   /** The (connection, profile) scope every read and write routes to. */
   profile: ProfileScope
+  /** Workspace hint the list was fetched with — the optimistic
+   *  write-through must address the same cache row (#133321). */
+  project?: string
   query: string
   /** Page-level refresh: a saved skill edit reloads the same way the refresh
    *  hotkey does, counts and slash completions included. */
@@ -80,7 +83,7 @@ interface SkillsTabProps {
 }
 
 /** The Skills tab: installed skills, official optional skills, and learned-skill editing. */
-export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps) {
+export function SkillsTab({ onRefresh, profile, project, query, skills }: SkillsTabProps) {
   const { t } = useI18n()
   const skillsSortDesc = useStore($skillsSortDesc)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -106,8 +109,8 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
   // archive repaint instantly; the next background refetch reconciles.
   const setSkills = useCallback(
     (fn: (cur: SkillInfo[] | undefined) => SkillInfo[] | undefined) =>
-      queryClient.setQueryData<SkillInfo[]>(skillsQueryKey(profile), prev => fn(prev) ?? prev),
-    [profile]
+      queryClient.setQueryData<SkillInfo[]>(skillsQueryKey(profile, project), prev => fn(prev) ?? prev),
+    [profile, project]
   )
 
   const visibleSkills = useMemo(() => filteredSkills(skills, query, skillsSortDesc), [query, skills, skillsSortDesc])

@@ -18,8 +18,8 @@ from hermes_cli.web_models import (
     SkillContentUpdate, SkillCreate, SkillInstallRequest, SkillToggle, SkillUninstallRequest,
     SkillsUpdateRequest)
 from hermes_cli.web_routers._common import (
-    _profile_scope, config_write_scope, http_failure, log as _log, require, scoped_to_thread,
-    spawn_profile_action)
+    _profile_scope, config_write_scope, http_failure, log as _log, project_cwd_scope, require,
+    scoped_to_thread, spawn_profile_action)
 
 hub_router = APIRouter()
 router = APIRouter()
@@ -341,7 +341,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 
 @router.get("/api/skills")
-async def get_skills(profile: Optional[str] = None):
+async def get_skills(profile: Optional[str] = None, project: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
@@ -349,20 +349,24 @@ async def get_skills(profile: Optional[str] = None):
 
     def _run():
         with _profile_scope(profile):
-            config = load_config()
-            disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
-            usage = load_usage()
-            # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > external > agent.
-            # "external" is mounted from skills.external_dirs and absent locally —
-            # externally authored, NOT learned. "agent" covers agent-authored AND
-            # local hand-made skills — the ones the user may edit/delete from the
-            # UI; external skills keep their in-place foreground edit rights
-            # regardless of label (commit 8c8fc6c1ec).
-            bundled_names = _read_bundled_names()
-            hub_names = _read_hub_installed_names()
-            external_names = _external_skill_names() - bundled_names - hub_names
+            # A workspace-aware caller (desktop Skills tab) names its checkout;
+            # without it a long-lived backend's process cwd decides the project
+            # tier, and it is never inside a checkout (#133321).
+            with project_cwd_scope(project):
+                config = load_config()
+                disabled = get_disabled_skills(config)
+                skills = _find_all_skills(skip_disabled=True)
+                usage = load_usage()
+                # Set-based provenance (same classification as skill_usage.provenance,
+                # without a per-skill manifest read): hub > bundled > external > agent.
+                # "external" is mounted from skills.external_dirs and absent locally —
+                # externally authored, NOT learned. "agent" covers agent-authored AND
+                # local hand-made skills — the ones the user may edit/delete from the
+                # UI; external skills keep their in-place foreground edit rights
+                # regardless of label (commit 8c8fc6c1ec).
+                bundled_names = _read_bundled_names()
+                hub_names = _read_hub_installed_names()
+                external_names = _external_skill_names() - bundled_names - hub_names
         for s in skills:
             s["enabled"] = s["name"] not in disabled
             s["usage"] = activity_count(usage.get(s["name"], {}))

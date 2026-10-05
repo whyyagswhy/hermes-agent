@@ -58,6 +58,45 @@ async def config_scoped_to_thread(profile: Optional[str], fn: Callable[[], Any])
     return await asyncio.to_thread(_run)
 
 
+@contextlib.contextmanager
+def project_cwd_scope(project: Optional[str]):
+    """Scope project-tier skill resolution to ``project`` for one request.
+
+    Long-lived backends (``hermes serve``, the desktop's spawned pool) sit in
+    a fixed process cwd outside any checkout, so ``find_project_root()`` sees
+    no project and the project tier silently drops out of listings that a
+    repo-cwd CLI includes (#133321). Surfaces that know their workspace pass a
+    path inside the checkout; when it walks up to a *trusted* project root the
+    session cwd is pinned there for the duration, then restored. Anything else
+    — empty, missing, or untrusted — keeps ambient behavior (never a new
+    error), so old callers are unaffected and an untrusted checkout can't
+    inject skills.
+    """
+    token = None
+    reset_session_cwd = None
+    try:
+        from pathlib import Path
+
+        from agent.runtime_cwd import reset_session_cwd as _reset, set_session_cwd
+        from agent.skill_utils import find_project_root, is_project_root_trusted
+
+        reset_session_cwd = _reset
+        raw = (project or "").strip()
+        if raw and Path(raw).expanduser().is_dir():
+            root = find_project_root(start=Path(raw).expanduser())
+            if root is not None and is_project_root_trusted(root):
+                token = set_session_cwd(str(root))
+    except Exception:
+        log.debug("project_cwd_scope ignored %r", project, exc_info=True)
+        token = None
+    try:
+        yield
+    finally:
+        if token is not None and reset_session_cwd is not None:
+            with contextlib.suppress(Exception):
+                reset_session_cwd(token)
+
+
 def destructive_profile(profile: Optional[str], route: str) -> Optional[str]:
     """The profile a DESTRUCTIVE or PRIVILEGED route acts on, or 400 when it is ambiguous.
 

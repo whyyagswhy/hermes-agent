@@ -16,13 +16,21 @@ export const SKILLS_QUERY_KEY = ['skills-list'] as const
 
 /** The list key for one scope: the plain key plus the Capabilities scope key,
  *  so every scoped profile keeps its own cached copy (prefix invalidations
- *  still match). */
-export const skillsQueryKey = (profile: ProfileScope) => [...SKILLS_QUERY_KEY, profileScopeKey(profile)]
+ *  still match). The project hint rides along so two workspaces never share
+ *  a row (AGENTS.md scope-in-key rule); empty stays `''` for the ambient
+ *  shape. */
+export const skillsQueryKey = (profile: ProfileScope, project?: string) => [
+  ...SKILLS_QUERY_KEY,
+  profileScopeKey(profile),
+  (project ?? '').trim()
+]
 
-export function useSkillsQuery(profile: ProfileScope) {
+export function useSkillsQuery(profile: ProfileScope, project?: string) {
+  const hint = (project ?? '').trim() || undefined
+
   return useQuery({
-    queryKey: skillsQueryKey(profile),
-    queryFn: () => getSkills(profile),
+    queryKey: skillsQueryKey(profile, hint),
+    queryFn: () => getSkills(profile, hint),
     staleTime: 0
   })
 }

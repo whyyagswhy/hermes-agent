@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -9,6 +10,7 @@ import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { $gateway } from '@/store/gateway'
 import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
+import { $currentCwd } from '@/store/session'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -81,9 +83,15 @@ export function CapabilitiesView({
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
+  // Project-tier skills resolve from the backend's cwd — never inside a
+  // checkout for a spawned `serve` — so the list is fetched with the
+  // workspace hint and the backend scopes the scan to that trusted root
+  // (#133321). Empty (no workspace yet) keeps ambient behavior.
+  const projectCwd = useStore($currentCwd).trim() || undefined
+
   // The two installed lists the tab pills count. They are fetched here, as a
   // pair, because the counts stay live for the tab the user is NOT on.
-  const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile)
+  const { data: skills, isError: skillsFailed, error: skillsError } = useSkillsQuery(scope.profile, projectCwd)
   const { data: toolsets, isError: toolsetsFailed } = useToolsetsQuery(scope.profile)
   const installedSkillNames = useMemo(() => new Set((skills ?? []).map(skill => skill.name)), [skills])
 
@@ -160,6 +168,7 @@ export function CapabilitiesView({
         key={`skills-${scope.key}`}
         onRefresh={() => void refreshCapabilities()}
         profile={scope.profile}
+        project={projectCwd}
         query={query}
         skills={skills ?? []}
       />

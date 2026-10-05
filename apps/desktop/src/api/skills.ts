@@ -11,10 +11,16 @@ import type { ActionResponse } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
-export function getSkills(profile?: ProfileScope): Promise<SkillInfo[]> {
+export function getSkills(profile?: ProfileScope, project?: string): Promise<SkillInfo[]> {
+  // Project-tier skills resolve from the backend's cwd, which for a spawned
+  // `serve` is never inside a checkout — so the Skills tab names its
+  // workspace and the backend scopes the scan to that trusted root (#133321).
+  // Omitted (no workspace yet) keeps the ambient behavior byte-identical.
+  const hint = (project ?? '').trim()
+
   return window.hermesDesktop.api<SkillInfo[]>({
     ...capabilityScoped(profile),
-    path: '/api/skills'
+    path: hint ? `/api/skills?project=${encodeURIComponent(hint)}` : '/api/skills'
   })
 }
 

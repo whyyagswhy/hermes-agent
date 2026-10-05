@@ -26,7 +26,7 @@ const getOfficialSkills = vi.fn()
 // observable.
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<typeof HermesApi>()),
-  getSkills: (profile?: null | string) => getSkills(profile),
+  getSkills: (profile?: null | string, project?: string) => getSkills(profile, project),
   getToolsets: (profile?: null | string) => getToolsets(profile),
   setSkillEnabled: (name: string, enabled: boolean, profile?: null | string) => setSkillEnabled(name, enabled, profile),
   setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
@@ -220,7 +220,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     })
 
     // Skills refetch scoped to the picked profile...
-    await waitFor(() => expect(getSkills).toHaveBeenCalledWith('researcher'))
+    await waitFor(() => expect(getSkills).toHaveBeenCalledWith('researcher', undefined))
 
     // ...and a toggle routes its write to that profile as well.
     const sw = await screen.findByRole('switch', { name: 'web-research' })
@@ -228,6 +228,21 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       fireEvent.click(sw)
     })
     await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('web-research', false, 'researcher'))
+  })
+
+  it('forwards the workspace cwd as the project hint so project skills resolve (#133321)', async () => {
+    // The backend serves from a fixed cwd outside any checkout; the Skills
+    // tab names its workspace so the scan scopes to that trusted root.
+    const { $currentCwd } = await import('@/store/session')
+    $currentCwd.set('/repo/proj')
+    try {
+      await renderSkills()
+
+      await waitFor(() => expect(getSkills).toHaveBeenCalled())
+      expect(getSkills.mock.calls[0][1]).toBe('/repo/proj')
+    } finally {
+      $currentCwd.set('')
+    }
   })
 
   it('shows the FULL skill in the detail pane — frontmatter metadata + body', async () => {
