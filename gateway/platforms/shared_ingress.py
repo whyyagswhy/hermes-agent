@@ -1,6 +1,7 @@
 """Shared-listener ingress for inbound-port platforms under ``gateway.multiplex_profiles``.
 
-The default profile owns the ONE HTTP listener (api_server, and the webhook adapter's port). A
+The owner profile (``default``, or the listener owner under gateway-only host mode #133086)
+owns the ONE HTTP listener (api_server, and the webhook adapter's port). A
 secondary profile's port-binding adapter (Twilio SMS, LINE, Teams, BlueBubbles, Microsoft Graph,
 WhatsApp Cloud, WeCom callback, Feishu webhook mode) therefore cannot bind its own port; instead the
 runner constructs it in *shared-listener mode*: ``bind_listener`` publishes the adapter's fully wired
@@ -43,7 +44,7 @@ def listener_base_url(host: Any, port: Any) -> str:
 
 
 def shared_listener_base(runner: Any) -> Optional[str]:
-    """``http://host:port`` of the default profile's live listener (api_server first, then webhook)."""
+    """``http://host:port`` of the owner profile's live listener (api_server first, then webhook)."""
     from gateway.config import Platform
     adapters = getattr(runner, "adapters", None) or {}
     for platform in (Platform.API_SERVER, Platform.WEBHOOK):

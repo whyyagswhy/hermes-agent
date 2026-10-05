@@ -178,6 +178,25 @@ def _loading_secondary_under_multiplexer() -> bool:
     return bool(override) and is_multiplex_active() and profile_name_for_home(override) != "default"
 
 
+def _loading_listener_owner_under_multiplexer() -> bool:
+    """True while a multiplexer loads the SHARED-LISTENER OWNER's config.
+
+    Normally the owner is ``default`` (never a secondary, so always False). Under gateway-only
+    host mode (#133086) the owner is a served profile (``multiplex_default_profile`` pointer or
+    first served): its own key carries listener intent, while every other secondary stays
+    mirrored at ``/p/<profile>/``.
+    """
+    from hermes_constants import get_hermes_home_override, profile_name_for_home
+    override = get_hermes_home_override()
+    if not override:
+        return False
+    try:
+        from hermes_cli.profiles import multiplex_listener_owner
+        return profile_name_for_home(override) == multiplex_listener_owner()
+    except Exception:
+        return False
+
+
 def _enable_from_env(
     config: GatewayConfig, platform: Platform, *, pop_marker: bool = False, warn: bool = True
 ) -> PlatformConfig:
@@ -195,11 +214,14 @@ def _enable_from_env(
         return platform_config
     if not explicit and not (
         platform.value in SHARED_LISTENER_MIRROR_PLATFORMS and _loading_secondary_under_multiplexer()
+        and not _loading_listener_owner_under_multiplexer()
     ):
         # A secondary's API_SERVER_KEY / WEBHOOK_ENABLED (the docs require the key in its .env for
-        # /p/<profile>/ auth) must not turn into listener intent: the default profile's listener already
+        # /p/<profile>/ auth) must not turn into listener intent: the owner profile's listener already
         # mirrors those two at /p/<profile>/ (#100397). The credential still lands in ``extra`` for it.
         # Every other inbound-port platform IS enabled for a secondary: it runs in shared-listener mode.
+        # Exception: the shared-listener OWNER under gateway-only host mode (#133086) — its own key
+        # is the listener intent, since there is no agent ``default`` to bind the port.
         platform_config.enabled = True
     elif warn:
         _warn_explicit_disable_beats_env(platform)

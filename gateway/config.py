@@ -64,6 +64,25 @@ def _env_multiplex_profiles_override() -> "bool | None":
     return parsed
 
 
+def _env_multiplex_host_only_override() -> "bool | None":
+    """GATEWAY_MULTIPLEX_HOST_ONLY operator override: True/False for a recognized token.
+
+    ``None`` when unset, blank, or unrecognized so the caller keeps the config.yaml
+    value (env > config > default), mirroring ``_env_multiplex_profiles_override``.
+    """
+    raw = os.getenv("GATEWAY_MULTIPLEX_HOST_ONLY")
+    if not (raw or "").strip():
+        return None
+    parsed = _bool_token(raw)
+    if parsed is None:
+        logger.warning(
+            "Ignoring unrecognized GATEWAY_MULTIPLEX_HOST_ONLY=%r "
+            "(expected one of %s or %s); falling back to config.yaml.",
+            raw, sorted(_TRUTHY_STRINGS), sorted(_FALSY_STRINGS),
+        )
+    return parsed
+
+
 # What the runner does when the last messaging adapter goes down (GatewayConfig.on_all_adapters_down).
 ON_ALL_ADAPTERS_DOWN_POLICIES = ("exit", "stay_alive")
 
@@ -610,6 +629,15 @@ class GatewayConfig:
     # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
     # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
     multiplex_profiles: Optional[bool] = None
+    # Gateway-only host mode (#133086): the multiplex host is a gateway-only process, not an
+    # agent profile. The host home skips agent skeleton/SOUL.md seeding, ``default`` leaves the
+    # served set, and the shared listener is owned by ``multiplex_default_profile`` (or the first
+    # served profile). GATEWAY_MULTIPLEX_HOST_ONLY overrides.
+    multiplex_host_only: bool = False
+    # Served profile that owns the shared listener (binds the port other profiles mirror at
+    # /p/<profile>/) when ``multiplex_host_only`` is on. Unset/dangling -> first served profile.
+    # GATEWAY_MULTIPLEX_DEFAULT_PROFILE overrides.
+    multiplex_default_profile: Optional[str] = None
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -647,6 +675,7 @@ class GatewayConfig:
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
         "max_concurrent_sessions", "multiplex_profiles",
+        "multiplex_host_only", "multiplex_default_profile",
         "on_all_adapters_down",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
@@ -772,6 +801,20 @@ class GatewayConfig:
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is not None:
             multiplex_profiles = env_multiplex
+        # env > config.yaml > default: GATEWAY_MULTIPLEX_HOST_ONLY wins; the default-profile
+        # pointer reads GATEWAY_MULTIPLEX_DEFAULT_PROFILE, else top-level/config.yaml
+        # ``multiplex_default_profile``. Blank env pointer falls through to config.yaml.
+        host_only = pick("multiplex_host_only")
+        env_host_only = _env_multiplex_host_only_override()
+        if env_host_only is not None:
+            host_only = env_host_only
+        default_profile = os.getenv("GATEWAY_MULTIPLEX_DEFAULT_PROFILE")
+        if default_profile is not None and not default_profile.strip():
+            default_profile = None
+        if default_profile is None:
+            default_profile = pick("multiplex_default_profile")
+        if default_profile is not None:
+            default_profile = str(default_profile).strip() or None
         # env > config.yaml > default: GATEWAY_ON_ALL_ADAPTERS_DOWN wins for launchers that know
         # whether a service manager is watching (the desktop launcher sets stay_alive); anything
         # unrecognized (env or yaml) falls back to "exit", the historical behavior (#118080).
@@ -800,6 +843,8 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
+            multiplex_host_only=_coerce_bool(host_only, False),
+            multiplex_default_profile=default_profile,
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),

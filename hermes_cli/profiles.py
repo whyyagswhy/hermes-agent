@@ -1159,6 +1159,122 @@ def _standalone_truthy(value: object) -> bool:
     return bool(value)
 
 
+#: Memoised gateway-only host flag per default home (same file-signature pattern as
+#: _STANDALONE_MEMO: ``None`` result retains the warning receipt without caching a
+#: transient failure as config).
+_HOST_ONLY_MEMO: Dict[str, Tuple[Optional[tuple], Optional[bool]]] = {}
+
+
+def _read_host_only_flag(home: Path) -> bool:
+    """Raw ``multiplex_host_only`` flag from *home*'s config.yaml (no load_config)."""
+    from hermes_yaml import YAMLError
+
+    from utils import file_signature
+
+    from gateway.config import _bool_token
+
+    home = Path(home)
+    cfg_path = home / "config.yaml"
+    try:
+        signature = file_signature(cfg_path.stat())
+    except FileNotFoundError:
+        signature = None
+    except OSError as exc:
+        signature = ("stat-error", exc.errno)
+        if _HOST_ONLY_MEMO.get(str(home)) != (signature, False):
+            logger.warning("Cannot read gateway.multiplex_host_only from %s (%s); treating as agent host",
+                           cfg_path, type(exc).__name__)
+        _HOST_ONLY_MEMO[str(home)] = (signature, False)
+        return False
+    cached = _HOST_ONLY_MEMO.get(str(home))
+    if cached is not None and cached[0] == signature and cached[1] is not None:
+        return cached[1]
+    value = None
+    if signature is not None:
+        from hermes_cli.config import read_user_config_raw
+        try:
+            cfg = read_user_config_raw(cfg_path) or {}
+        except (YAMLError, OSError, UnicodeError) as exc:
+            if cached is None or cached[0] != signature:
+                logger.warning("Cannot read gateway.multiplex_host_only from %s (%s); treating as agent host",
+                               cfg_path, type(exc).__name__)
+            _HOST_ONLY_MEMO[str(home)] = (signature, False if isinstance(exc, YAMLError) else None)
+            return False
+        if isinstance(cfg.get("gateway"), dict) and cfg["gateway"].get("multiplex_host_only") is not None:
+            value = cfg["gateway"].get("multiplex_host_only")
+        elif cfg.get("multiplex_host_only") is not None:
+            value = cfg.get("multiplex_host_only")
+    if isinstance(value, str):
+        result = _bool_token(value) is True
+    else:
+        result = bool(value)
+    _HOST_ONLY_MEMO[str(home)] = (signature, result)
+    return result
+
+
+def multiplex_host_only_active() -> bool:
+    """Is the DEFAULT home a gateway-only host (``gateway.multiplex_host_only``)?
+
+    File read only (config.yaml + ``GATEWAY_MULTIPLEX_HOST_ONLY`` env override); never
+    ``load_config`` so home initialization can consult it without recursing.
+    """
+    from gateway.config import _env_multiplex_host_only_override
+
+    env = _env_multiplex_host_only_override()
+    if env is not None:
+        return env
+    return _read_host_only_flag(_get_default_hermes_home())
+
+
+def is_host_only_home(home: Path) -> bool:
+    """True when *home* is the default home running as a gateway-only host."""
+    try:
+        if Path(home).resolve() != Path(_get_default_hermes_home()).resolve():
+            return False
+    except OSError:
+        return False
+    return multiplex_host_only_active()
+
+
+def multiplex_host_default_profile() -> Optional[str]:
+    """Raw ``multiplex_default_profile`` pointer from the default home (stripped, or None)."""
+    from hermes_yaml import YAMLError
+
+    env = (os.getenv("GATEWAY_MULTIPLEX_DEFAULT_PROFILE") or "").strip()
+    if env:
+        return env
+    try:
+        from hermes_cli.config import read_user_config_raw
+
+        cfg = read_user_config_raw(_get_default_hermes_home() / "config.yaml") or {}
+    except (YAMLError, OSError, UnicodeError):
+        return None
+    if isinstance(cfg.get("gateway"), dict) and cfg["gateway"].get("multiplex_default_profile"):
+        return str(cfg["gateway"]["multiplex_default_profile"]).strip() or None
+    if cfg.get("multiplex_default_profile"):
+        return str(cfg["multiplex_default_profile"]).strip() or None
+    return None
+
+
+def multiplex_listener_owner() -> str:
+    """Profile that owns the shared listener: ``default``, unless the host is gateway-only.
+
+    Host-only mode has no agent ``default``: the owner is the ``multiplex_default_profile``
+    pointer when it names a live served profile, else the first served named profile
+    (``default`` only as a degenerate fallback with zero named profiles).
+    """
+    if not multiplex_host_only_active():
+        return "default"
+    served = [name for name, _home in profiles_to_serve(True, include_host_default=True)
+              if name != "default"]
+    pointer = multiplex_host_default_profile()
+    if pointer and pointer in served:
+        return pointer
+    if served:
+        return served[0]
+    return "default"
+
+
 def parked_marker_path(home: Path) -> Path:
     return Path(home) / "gateway.parked"
 
@@ -1172,7 +1288,8 @@ _parked_default_warned: set[Path] = set()
 
 
 def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
-                      include_parked: bool = False) -> List[Tuple[str, Path]]:
+                      include_parked: bool = False,
+                      include_host_default: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
@@ -1180,6 +1297,11 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
     and parked profiles skipped). Pure directory read: never creates a profile dir (#94590).
+
+    Gateway-only host mode (``gateway.multiplex_host_only`` on the default home, #133086):
+    the host is not an agent profile, so ``default`` is excluded as an agent target unless
+    the caller passes ``include_host_default=True`` (installed-roster enumeration: attach
+    decisions, standalone boot notices).
 
     Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
     out of the host multiplexer; a ``gateway.parked`` marker (``hermes -p X gateway stop``) skips
@@ -1192,7 +1314,9 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
         _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
-    serve: List[Tuple[str, Path]] = [("default", default)]
+    serve: List[Tuple[str, Path]] = []
+    if include_host_default or not multiplex_host_only_active():
+        serve.append(("default", default))
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
                  and (include_parked or not profile_is_parked(entry)))

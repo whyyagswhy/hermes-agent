@@ -52,25 +52,42 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+#: Agent skeleton entries a gateway-only host home skips (#133086): no agent runs there,
+#: so there is no SOUL.md to seed and no skills to install into. Never a deletion pass —
+#: pre-existing files are left untouched (no migration of existing homes).
+_HOST_ONLY_SKIPPED_SUBDIRS = frozenset({"skills"})
+
+
 def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> None:
     from hermes_cli.config import _ensure_default_soul_md, is_managed
 
+    try:
+        from hermes_cli.profiles import is_host_only_home
+        host_only = is_host_only_home(home)
+    except Exception:
+        host_only = False
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
     try:
         _ensure_directory(home, create=not managed, secure=not managed, home=home)
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
+            if host_only and subdir in _HOST_ONLY_SKIPPED_SUBDIRS:
+                continue
             _ensure_directory(home / subdir, create=not managed, secure=not managed, home=home)
         if managed:
             _ensure_directory(home / "logs" / "curator", create=True, secure=False, home=home)
-        try:
-            _ensure_default_soul_md(home)
-        except OSError as exc:
-            raise HomeInitializationError(
-                f"Cannot initialize Hermes home {home}: {exc}. "
-                "Check storage availability and access permissions."
-            ) from exc
+        if host_only:
+            # Gateway-only host: no agent skeleton, no SOUL.md seed. Existing files stay.
+            pass
+        else:
+            try:
+                _ensure_default_soul_md(home)
+            except OSError as exc:
+                raise HomeInitializationError(
+                    f"Cannot initialize Hermes home {home}: {exc}. "
+                    "Check storage availability and access permissions."
+                ) from exc
     finally:
         if old_umask is not None:
             os.umask(old_umask)

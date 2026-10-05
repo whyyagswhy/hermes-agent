@@ -1269,12 +1269,17 @@ class GatewayAdapterLifecycleMixin:
             if multiplex and platform is Platform.RELAY:
                 self._note_unserved_secondary_platform(profile_name, platform)
                 continue
-            # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
-            # instance here would fight the default for the port (#100397).
+            # api_server / webhook: the owner profile's listener already mirrors them at
+            # /p/<profile>/; a second instance here would fight the owner for the port (#100397).
             if multiplex and platform.value in SHARED_LISTENER_MIRROR_PLATFORMS:
+                try:
+                    from hermes_cli.profiles import multiplex_listener_owner
+                    _owner = multiplex_listener_owner()
+                except Exception:
+                    _owner = "default"
                 logger.info(
-                    "[MULTIPLEX] Profile '%s': %s is served by the default profile's listener at /p/%s/ — "
-                    "not starting a second listener", profile_name, platform.value, profile_name,
+                    "[MULTIPLEX] Profile '%s': %s is served by the '%s' profile's listener at /p/%s/ — "
+                    "not starting a second listener", profile_name, platform.value, _owner, profile_name,
                 )
                 continue
             adapter = None

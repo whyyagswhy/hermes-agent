@@ -1692,6 +1692,15 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
     if any(name == active for name, _home in homes):
         return homes
+    if active == "default":
+        # Gateway-only host (#133086): the host is not an agent target — the serve list
+        # excluded it on purpose, so the launch-profile fallback must not re-add it.
+        try:
+            from hermes_cli.profiles import multiplex_host_only_active
+            if multiplex_host_only_active():
+                return homes
+        except Exception:
+            pass
     try:
         return homes + [(active, get_profile_dir(active))]
     except Exception:
@@ -3657,9 +3666,14 @@ class GatewayRunner(
         # the process (that launcher is a secondary adapter owner).
         launch = self._active_profile_name()
         self._kanban_notifier_profile = launch
-        self._primary_profile_name = (
-            "default" if getattr(self.config, "multiplex_profiles", False) else launch
-        )
+        if getattr(self.config, "multiplex_profiles", False):
+            try:
+                from hermes_cli.profiles import multiplex_listener_owner
+                self._primary_profile_name = multiplex_listener_owner()
+            except Exception:
+                self._primary_profile_name = "default"
+        else:
+            self._primary_profile_name = launch
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -5541,7 +5555,8 @@ def _log_standalone_profiles_at_boot(runner) -> None:
         from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
         from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
-        for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
+        for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True,
+                                               include_host_default=True):
             if name != "default" and name not in served and profile_is_standalone(home):
                 logger.warning("profile '%s' is standalone (gateway.standalone: true); not served by "
                                "this gateway. %s", name, STANDALONE_DEPRECATION_NOTICE)

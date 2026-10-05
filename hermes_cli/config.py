@@ -583,8 +583,15 @@ def ensure_hermes_home():
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    from hermes_cli.config_home import initialize_home
-    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
+    from hermes_cli.config_home import _HOST_ONLY_SKIPPED_SUBDIRS, initialize_home
+    try:
+        from hermes_cli.profiles import is_host_only_home
+        host_only = is_host_only_home(home)
+    except Exception:
+        host_only = False
+    subdirs = (tuple(s for s in _HERMES_HOME_SUBDIRS if s not in _HOST_ONLY_SKIPPED_SUBDIRS)
+               if host_only else _HERMES_HOME_SUBDIRS)
+    initialize_home(home, subdirs, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
