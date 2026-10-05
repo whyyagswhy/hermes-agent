@@ -1,5 +1,6 @@
 """Only never-started cron delivery may wait for a CLI owner's release."""
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import Mock
@@ -196,3 +197,69 @@ def test_non_dict_deferred_receipt_is_skipped_by_the_drain_and_fails_exact_id_re
     with pytest.raises(ValueError):
         queue.defer("e" * 64, {"id": "job"}, "same id", "", tmp_path)
     assert bad.read_text(encoding="utf-8") == payload
+
+
+def test_no_agent_coalesce_keeps_latest_queued(tmp_path, monkeypatch):
+    """Frequent no-agent crons must not pile same-job snapshots: deferring a newer
+    record suppresses older still-queued ones, keeping only the latest for replay."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {"id": "job", "no_agent": True, "script": "echo hi"}
+    queue.defer("a" * 64, dict(job), "first", "", tmp_path)
+    queue.defer("b" * 64, dict(job), "second", "", tmp_path)
+    latest = queue.defer("c" * 64, dict(job), "third", "", tmp_path)
+    assert queue.read_pending("a" * 64)["status"] == "suppressed"
+    assert queue.read_pending("a" * 64)["error"].startswith("superseded by seq ")
+    assert queue.read_pending("b" * 64)["status"] == "suppressed"
+    assert "superseded by seq %d" % latest["sequence"] in queue.read_pending("b" * 64)["error"]
+    assert queue.read_pending("c" * 64)["status"] == "queued"
+
+
+def test_no_agent_coalesce_drain_replays_only_latest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {"id": "job", "no_agent": True, "script": "echo hi"}
+    queue.defer("a" * 64, dict(job), "first", "", tmp_path)
+    queue.defer("b" * 64, dict(job), "second", "", tmp_path)
+    queue.defer("c" * 64, dict(job), "third", "", tmp_path)
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    queue.drain()
+    assert seen == ["third"]
+
+
+def test_agent_job_without_flag_does_not_coalesce(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {"id": "job"}
+    queue.defer("a" * 64, dict(job), "first", "", tmp_path)
+    queue.defer("b" * 64, dict(job), "second", "", tmp_path)
+    assert queue.read_pending("a" * 64)["status"] == "queued"
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    queue.drain()
+    assert seen == ["first", "second"]
+
+
+def test_agent_job_opt_in_coalesce_latest(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {"id": "job", "bot_chat_coalesce": "latest"}
+    queue.defer("a" * 64, dict(job), "first", "", tmp_path)
+    latest = queue.defer("b" * 64, dict(job), "second", "", tmp_path)
+    assert queue.read_pending("a" * 64)["status"] == "suppressed"
+    assert "superseded by seq %d" % latest["sequence"] in queue.read_pending("a" * 64)["error"]
+    seen = []
+    monkeypatch.setattr(delivery, "_deliver_to_bot_chat", lambda j, c, p, **kw: seen.append(c))
+    queue.drain()
+    assert seen == ["second"]
+
+
+def test_coalesce_leaves_claimed_and_other_targets_alone(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = {"id": "job", "no_agent": True, "script": "echo hi"}
+    queue.defer("a" * 64, dict(job), "first", "", tmp_path)
+    rec = queue.read_pending("a" * 64)
+    rec["status"] = "claimed"
+    (queue._root() / ("a" * 64 + ".json")).write_text(json.dumps(rec), encoding="utf-8")
+    queue.defer("b" * 64, dict(job), "second", "", tmp_path)
+    assert queue.read_pending("a" * 64)["status"] == "claimed"
+    other = {"id": "other", "no_agent": True, "script": "echo hi"}
+    queue.defer("d" * 64, dict(other), "other-job", "", tmp_path)
+    assert queue.read_pending("d" * 64)["status"] == "queued"

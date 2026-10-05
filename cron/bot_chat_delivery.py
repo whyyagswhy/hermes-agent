@@ -56,6 +56,37 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     return records
 
 
+def _coalesce_enabled(job: dict) -> bool:
+    """Latest-wins eligibility: implicit for ``no_agent`` script jobs (whose snapshots
+    are interchangeable), opt-in via ``bot_chat_coalesce: latest`` for agent jobs."""
+    if not isinstance(job, dict):
+        return False
+    if job.get("no_agent"):
+        return True
+    return job.get("bot_chat_coalesce") == "latest"
+
+
+def _coalesce_key(record: dict) -> tuple:
+    """Same job plus same delivery target and lane: one stale replay per group survives."""
+    job = record.get("job") if isinstance(record.get("job"), dict) else {}
+    return (job.get("id"), record.get("profile"), record.get("home"),
+            bool(record.get("for_failure")), bool(record.get("degraded")))
+
+
+def _suppress_superseded(root: Path, records: list[tuple[Path, dict]], keeper_sequence: int,
+                         key: tuple) -> None:
+    """Mark older still-queued group members as superseded by the keeper sequence.
+
+    Only ``queued`` records move; claimed/ambiguous/transferred/settled/suppressed are
+    untouched so at-most-once replay is preserved. Callers hold the producer lock.
+    """
+    for path, record in records:
+        if (record.get("status") == "queued" and record.get("sequence", 0) < keeper_sequence
+                and _coalesce_key(record) == key):
+            record.update(status="suppressed", error=f"superseded by seq {keeper_sequence}")
+            atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+
+
 def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
           for_failure: bool = False, suppressed: bool = False, degraded: bool = False) -> dict:
     """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
@@ -75,6 +106,8 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
         sequence = max((record["sequence"] for _, record in _records(root)), default=0) + 1
         record = dict(id=key, status="suppressed" if suppressed else "queued", job=job, content=content,
                       profile=profile, home=str(home), sequence=sequence)
+        if record["status"] == "queued" and _coalesce_enabled(job):
+            _suppress_superseded(root, _records(root), sequence, _coalesce_key(record))
         if for_failure:
             record["for_failure"] = True
         if degraded:
@@ -101,6 +134,14 @@ def _drain(root: Path) -> None:
 
     with _FileLock(root / ".lock"):
         records = sorted(_records(root), key=lambda item: item[1]["sequence"])
+        latest: dict[tuple, tuple[Path, dict]] = {}
+        for path, record in records:
+            if record.get("status") == "queued":
+                latest[_coalesce_key(record)] = (path, record)
+        for key, (_, keeper) in latest.items():
+            keeper_job = keeper.get("job")
+            if _coalesce_enabled(keeper_job if isinstance(keeper_job, dict) else {}):
+                _suppress_superseded(root, records, keeper.get("sequence", 0), key)
     for path, _ in records:
         with _FileLock(root / ".lock"):
             record = json.loads(path.read_text(encoding="utf-8-sig"))
