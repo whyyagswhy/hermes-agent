@@ -1562,6 +1562,7 @@ def _run_conversation_turn(
 
     # The gateway caches agents across turns; compression state is per-turn, or a stale
     # in-place boundary would make a later uncompressed result look compacted.
+    agent._turn_failover_reasons = []  # classified reason per fallback activation (#133361)
     agent._last_compaction_in_place = agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
     begin_fast_mode_turn(agent, conversation_history)

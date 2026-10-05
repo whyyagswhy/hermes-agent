@@ -15,7 +15,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.interrupt_control import interrupted_during_api_call_reason
-from agent.turn_failure_copy import exit_reason_failure, stamp_failure
+from agent.turn_failure_copy import exit_reason_failure, resolve_restart_limit_failure, stamp_failure
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
@@ -577,6 +577,16 @@ def finalize_turn(
     # Advisory verdicts (``fails_turn=False``) only add the code: ``failed``/``completed`` keep
     # the loop's values so cron, kanban and transcript persistence behave as before.
     _exit_failure = None if interrupted else exit_reason_failure(_turn_exit_reason)
+    if _exit_failure is not None and not interrupted:
+        # A fallback chain exhausted purely by transient 429/503s broke the turn with a
+        # generic loop_error (exit 1); stamp the dominant failover verdict so a Kanban
+        # worker exits 75 (all-transient) or 78 (all-terminal) instead (#133361). Mixed or
+        # unrecorded chains keep loop_error. Advisory fails_turn is preserved.
+        _refined = resolve_restart_limit_failure(
+            _turn_exit_reason, getattr(agent, "_turn_failover_reasons", None)
+        )
+        if _refined is not None:
+            _exit_failure = _exit_failure._replace(reason=_refined[0], retryable=_refined[1])
     if _exit_failure is not None and _exit_failure.fails_turn:
         failed = True
 

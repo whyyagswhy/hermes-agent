@@ -134,6 +134,86 @@ def invalid_response_failure_reason(response: Any) -> str:
         return "invalid_response"
 
 
+# Failover verdicts recorded per fallback-chain activation during a turn (#133361).
+# Mirror of hermes_cli.cli_single_query._TRANSIENT/_TERMINAL_PROVIDER_REASONS: transient
+# (retry-later, EX_TEMPFAIL) vs terminal (re-auth/reconfigure, EX_CONFIG). billing
+# stays transient: credit comes back. Kept here so the turn finalizer can stamp the
+# dominant reason without importing the CLI layer.
+TURN_FAILOVER_TRANSIENT_REASONS = frozenset({
+    "rate_limit", "upstream_rate_limit", "billing", "overloaded", "server_error", "timeout",
+})
+TURN_FAILOVER_TERMINAL_REASONS = frozenset({
+    "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+})
+
+# turn_exit_reason prefixes whose generic loop_error verdict may be refined from the
+# turn's recorded failover reasons (#133361).
+_RESTART_LIMIT_EXIT_PREFIXES = ("rebuilt_restart_limit_exceeded", "redirect_restart_limit_exceeded")
+
+
+def record_turn_failover_reason(agent: Any, reason: Any) -> None:
+    """Append one fallback-chain activation's classified reason to the turn record (#133361).
+
+    Fail-open: a missing/unusable slot must never break failover itself.
+    """
+    try:
+        value = getattr(reason, "value", reason)
+        if reason is None or value is None:
+            return
+        value = str(value).strip()
+        if not value:
+            return
+        seen = getattr(agent, "_turn_failover_reasons", None)
+        if not isinstance(seen, list):
+            seen = []
+            setattr(agent, "_turn_failover_reasons", seen)
+        seen.append(value)
+    except Exception:
+        pass
+
+
+def _dominant_reason(reasons: Any) -> str:
+    """Most frequent reason; ties break toward first-seen (stable, deterministic)."""
+    counts: Dict[str, int] = {}
+    order: List[str] = []
+    for raw in reasons or ():
+        value = str(raw or "").strip()
+        if not value or value in counts:
+            if value:
+                counts[value] += 1
+            continue
+        counts[value] = 1
+        order.append(value)
+    best = order[0]
+    for value in order[1:]:
+        if counts[value] > counts[best]:
+            best = value
+    return best
+
+
+def resolve_restart_limit_failure(
+    turn_exit_reason: Any, reasons: Any
+) -> Optional[Tuple[str, bool]]:
+    """(failure_reason, retryable) refining a restart-limit exit, else None (#133361).
+
+    Only restart-limit exits qualify; an empty record, an unknown entry, or a mix of
+    transient and terminal verdicts keeps the generic loop_error. All-transient
+    stamps the dominant transient reason (retryable); all-terminal the dominant
+    terminal one (not retryable).
+    """
+    if not str(turn_exit_reason or "").startswith(_RESTART_LIMIT_EXIT_PREFIXES):
+        return None
+    values = [str(raw or "").strip() for raw in (reasons or ())]
+    values = [value for value in values if value]
+    if not values:
+        return None
+    if all(value in TURN_FAILOVER_TRANSIENT_REASONS for value in values):
+        return (_dominant_reason(values), True)
+    if all(value in TURN_FAILOVER_TERMINAL_REASONS for value in values):
+        return (_dominant_reason(values), False)
+    return None
+
+
 def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
     """:class:`ExitFailure` for a loop exit that carries a failure verdict, else None."""
     reason = str(turn_exit_reason or "")
