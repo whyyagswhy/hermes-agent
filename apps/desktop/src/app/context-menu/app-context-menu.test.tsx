@@ -205,6 +205,36 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
+  it('scopes spellcheck suggestions away from the spellcheck=false composer', async () => {
+    installBridge()
+    mountMenu()
+    // The chat composer is a contentEditable with spellcheck explicitly off
+    // (it shares the Chromium macOS smart quotes gate): main never forwards
+    // misspelling facts for it, so no suggestion section may attach even if a
+    // forward lands while its menu is open.
+    // jsdom does not implement isContentEditable, so a textarea carrying
+    // the same spellcheck=false opt-out stands in for the composer here.
+    const host = attach('<textarea spellcheck="false">teh</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+
+    augmentSpellcheck({ misspelledWord: 'teh', suggestions: ['the', 'ten'] })
+
+    // The forward landed (the store carries the facts) ...
+    await waitFor(() => {
+      const open = $contextMenu.get()
+
+      expect(open?.kind === 'dom' && open.spellcheck?.misspelledWord).toBe('teh')
+    })
+    // ... yet no suggestion section attaches to the opted-out composer,
+    // while the edit verbs stay available.
+    expect(screen.queryByText('Add to dictionary')).toBeNull()
+    expect(screen.queryByText('the')).toBeNull()
+    expect(screen.getByText('Select all')).toBeTruthy()
+  })
+
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 

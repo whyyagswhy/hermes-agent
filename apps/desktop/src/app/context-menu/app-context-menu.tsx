@@ -270,7 +270,16 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   }
 
   if (target.editable) {
-    if (spellcheck) {
+    // The chat composer opts out of OS spellcheck (spellcheck={false} shares
+    // the Chromium macOS smart-quotes gate, so enabling it would bring back
+    // smart quotes and dashes in a code-bearing field): main never forwards
+    // The opt-out on the element owns the scoping, so
+    // check the attribute rather than the store payload: a stale forward must
+    // not conjure suggestions on an opted-out field.
+    const editableOptsOutOfSpellcheck =
+      target.editable.getAttribute('spellcheck')?.toLowerCase() === 'false'
+
+    if (spellcheck && !editableOptsOutOfSpellcheck) {
       sections.push([
         ...spellcheck.suggestions
           .slice(0, 5)
