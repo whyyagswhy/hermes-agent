@@ -262,6 +262,78 @@ def _default_exclude(args):
     return None if getattr(args, "source", None) else ["tool"]
 
 
+# -- sessions list projection/sorting (--columns/--sort/--json) ----------------------
+
+
+_SESSION_LIST_COLUMNS = (
+    "id", "title", "preview", "workspace", "source", "last_active",
+    "started_at", "message_count", "tokens", "cost_usd", "model", "cwd",
+)
+
+
+def _parse_session_list_columns(raw):
+    # Split a --columns/--fields value; None when a name is unknown (error printed).
+    names = [c.strip().lower().replace("-", "_") for c in raw.split(",")]
+    names = [n for n in names if n]
+    unknown = [n for n in names if n not in _SESSION_LIST_COLUMNS]
+    if unknown:
+        print(f"Error: unknown column '{unknown[0]}'. "
+            f"Available: {', '.join(_SESSION_LIST_COLUMNS)}")
+        return None
+    return names or list(_SESSION_LIST_COLUMNS)
+
+
+def _session_list_value(s, column):
+    # One projected value for --columns/--json (derived names included).
+    if column == "workspace":
+        from hermes_state_sessions import workspace_key as _ws_key
+        return _ws_key(s) or ""
+    if column == "tokens":
+        return (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0)
+    if column == "cost_usd":
+        return s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0
+    return s.get(column, "")
+
+
+def _sort_session_list(sessions, sort):
+    # Python-side ordering (SQL only knows started/last-active chain order).
+    key = (sort or "started").replace("-", "_")
+    def _k(s):
+        if key == "messages":
+            return s.get("message_count") or 0
+        if key == "cost":
+            return s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0
+        if key == "last_active":
+            return s.get("last_active") or 0
+        return s.get("started_at") or 0
+    return sorted(sessions,
+        key=lambda s: (_k(s), s.get("started_at") or 0, s["id"]), reverse=True)
+
+
+def _print_session_list_columns(sessions, columns, ws_key):
+    # Generic --columns table: Title-cased headers, truncated cells.
+    def _cell(s, column):
+        if column == "last_active":
+            return _relative_time(s.get("last_active"), session_id=s["id"])
+        if column == "workspace":
+            key = ws_key(s) or ""
+            return (os.path.basename(key.rstrip("/\\")) or key or "-")[:16]
+        value = _session_list_value(s, column)
+        return "" if value is None else str(value)
+    headers = ["ID" if c == "id" else c.replace("_", " ").title() for c in columns]
+    widths = [len(h) for h in headers]
+    rows = []
+    for s in sessions:
+        cells = [_cell(s, c)[:40] for c in columns]
+        rows.append(cells)
+        for i, cell in enumerate(cells):
+            widths[i] = max(widths[i], len(cell))
+    header_line = "  ".join(h.ljust(w) for h, w in zip(headers, widths))
+    print(header_line + "\n" + "-" * len(header_line))
+    for cells in rows:
+        print("  ".join(c.ljust(w) for c, w in zip(cells, widths)))
+
+
 def _cmd_list(db, args):
     from hermes_state_sessions import workspace_key as _ws_key
     # LIMIT lives in the query, so probe one row past the cap: it is the only way to know the
@@ -281,8 +353,28 @@ def _cmd_list(db, args):
         sessions = [
             s for s, key in keyed if key and (_needle in key or _needle == os.path.basename(key.rstrip("/\\")))
         ]
+    _raw_columns = (getattr(args, "columns", None) or "").strip()
+    columns = _parse_session_list_columns(_raw_columns) if _raw_columns else None
+    if _raw_columns and columns is None:
+        return 1
+    want_json = getattr(args, "json", False)
     if not sessions:
-        print("No sessions found.")
+        print("[]" if want_json else "No sessions found.")
+        return
+
+    sessions = _sort_session_list(sessions, getattr(args, "sort", "started"))
+
+    if want_json:
+        rows = ([{c: _session_list_value(s, c) for c in columns} for s in sessions]
+            if columns else [dict(s) for s in sessions])
+        print(json.dumps(rows, indent=2, default=str))
+        if truncated:
+            print(f"listing truncated: use --limit {limit * 2} to see more", file=sys.stderr)
+        return
+    if columns:
+        _print_session_list_columns(sessions, columns, _ws_key)
+        if truncated:
+            print_truncated(None, f"use --limit {limit * 2} to see more")
         return
 
     # Workspace column only when some session carries a key (or when filtering): unbound listings read as before.
