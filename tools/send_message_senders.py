@@ -198,6 +198,14 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
     # a multi-file send or a voice note.
     media_kwargs = {**thread_kwargs, **({"caption": caption, "parse_mode": parse_mode}
                                         if caption is not None and not voice_note else {})}
+    try:
+        from plugins.platforms.telegram.adapter import _media_send_budgets_for_size
+        _media_size = os.path.getsize(media_path) if os.path.exists(media_path) else 0
+        media_kwargs.setdefault(
+            "read_timeout", _media_send_budgets_for_size(_media_size)[0]
+        )
+    except Exception:
+        pass
     if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
         with contextlib.suppress(Exception):
             from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds

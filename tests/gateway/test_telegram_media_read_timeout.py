@@ -104,4 +104,6 @@ async def test_send_image_upload_fallback_uses_media_read_timeout(adapter, monke
     assert len(calls) == 2, "expected the byte-upload fallback to run"
     upload = calls[1]
     assert isinstance(upload["photo"], (bytes, bytearray))
-    assert upload["read_timeout"] == tg._MEDIA_SEND_READ_TIMEOUT
+    expected_read, _ = tg._media_send_budgets_for_size(8 * 1024 * 1024)
+    assert upload["read_timeout"] == expected_read
+    assert upload["read_timeout"] > tg._MEDIA_SEND_READ_TIMEOUT
