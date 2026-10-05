@@ -90,6 +90,8 @@ def _make_update(msg):
     """Wrap a message in a mock Update."""
     update = MagicMock()
     update.message = msg
+    # Mirror python-telegram-bot: Update.effective_message resolves to the message.
+    update.effective_message = msg
     return update
 
 

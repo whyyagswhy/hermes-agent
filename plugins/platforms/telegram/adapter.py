@@ -6780,8 +6780,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        msg = self._effective_update_message(update)
         if not msg:
+            logger.debug("[Telegram] Dropping media update %s: no message payload", getattr(update, "update_id", None))
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")
@@ -6793,6 +6794,13 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
                     _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
+                logger.debug(
+                    "[Telegram] Observed (not processed) media update %s in chat %s",
+                    getattr(update, "update_id", None), self._chat_id_str(msg))
+                return
+            logger.debug(
+                "[Telegram] Dropping media update %s: group trigger gate rejected message %s in chat %s",
+                getattr(update, "update_id", None), getattr(msg, "message_id", None), self._chat_id_str(msg))
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
         if msg.caption:
