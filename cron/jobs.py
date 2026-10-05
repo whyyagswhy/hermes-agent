@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import json
 import logging
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -1742,6 +1743,88 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _git_state_of_workdir(workdir) -> "Optional[Dict[str, Any]]":
+    """Branch/commit/dirty snapshot of a workdir git checkout, or None.
+
+    None when workdir is unset, not a repo, has no commits yet, or git cannot
+    answer (missing binary, timeout, odd repo state). Recording is best-effort:
+    enforcement only applies when a pin exists, and treats an unresolvable
+    current state as a mismatch.
+    """
+    if not workdir:
+        return None
+    try:
+        def _git(*args: str):
+            proc = subprocess.run(
+                ["git", "-C", str(workdir), *args],
+                capture_output=True, text=True, timeout=10)
+            if proc.returncode != 0:
+                return None
+            return proc.stdout.strip() or None
+        if _git("rev-parse", "--git-dir") is None:
+            return None
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        if branch == "HEAD":
+            branch = None
+        commit = _git("rev-parse", "HEAD")
+        if commit is None:
+            return None
+        dirty = _git("status", "--porcelain") is not None
+        return {"branch": branch, "commit": commit, "dirty": dirty}
+    except Exception:
+        logger.debug("Cron workdir git snapshot failed for %r", workdir, exc_info=True)
+        return None
+
+
+def _describe_workdir_git_pin(pin: "Dict[str, Any]") -> str:
+    branch = pin.get("branch") or "(detached HEAD)"
+    return f"branch {branch} at {pin.get('commit')}"
+
+
+def workdir_git_mismatch(job: "Dict[str, Any]") -> "Optional[str]":
+    """Error text when a pinned workdir git state drifted, else None.
+
+    Only jobs created/updated after pinning carry ``workdir_git``, so legacy
+    records are unaffected. A branch pin enforces the branch (commits may
+    advance); a detached-HEAD pin enforces the exact commit. A newly dirty
+    tree only warns. ``HERMES_CRON_WORKDIR_GIT_ENFORCE=0`` disables the
+    refusal (record-only mode).
+    """
+    pin = job.get("workdir_git")
+    if not isinstance(pin, dict):
+        return None
+    if cron_env_setting("HERMES_CRON_WORKDIR_GIT_ENFORCE", "1").strip() == "0":
+        return None
+    workdir = (job.get("workdir") or "").strip() or None
+    if not workdir:
+        return None
+    current = _git_state_of_workdir(workdir)
+    if current is None:
+        return (
+            f"Cron workdir {workdir!r} no longer resolves as a git checkout "
+            f"(pinned at job setup: {_describe_workdir_git_pin(pin)}). "
+            f"Update the job workdir or re-pin it; "
+            f"HERMES_CRON_WORKDIR_GIT_ENFORCE=0 skips this check.")
+    if pin.get("branch") is not None:
+        if current.get("branch") != pin["branch"]:
+            return (
+                f"Cron workdir {workdir!r} is on branch "
+                f"{current.get('branch') or '(detached HEAD)'} but the job was "
+                f"pinned to {_describe_workdir_git_pin(pin)}. "
+                f"Update the job workdir to re-pin; "
+                f"HERMES_CRON_WORKDIR_GIT_ENFORCE=0 skips this check.")
+    elif current.get("commit") != pin.get("commit"):
+        return (
+            f"Cron workdir {workdir!r} moved from pinned commit {pin.get('commit')} "
+            f"to {current.get('commit')}. Update the job workdir to re-pin; "
+            f"HERMES_CRON_WORKDIR_GIT_ENFORCE=0 skips this check.")
+    if current.get("dirty") and not pin.get("dirty"):
+        logger.warning(
+            "Cron workdir %r has uncommitted changes since the job was pinned "
+            "(%s) — running anyway", workdir, _describe_workdir_git_pin(pin))
+    return None
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1927,6 +2010,9 @@ def create_job(
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
     }
+    workdir_git = _git_state_of_workdir(f["workdir"])
+    if workdir_git is not None:
+        job["workdir_git"] = workdir_git
     # Optional keys are persisted only when explicitly set: an absent key falls back to global
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature
     # jobs.
@@ -2119,6 +2205,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
+        if "workdir" in updates:
+            fresh = _git_state_of_workdir(updated.get("workdir"))
+            if fresh is None:
+                updated.pop("workdir_git", None)
+            else:
+                updated["workdir_git"] = fresh
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
