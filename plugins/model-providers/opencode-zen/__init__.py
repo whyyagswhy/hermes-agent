@@ -118,13 +118,12 @@ class OpenCodeZenProfile(ProviderProfile):
 opencode_zen = OpenCodeZenProfile(
     name="opencode-zen", aliases=("opencode", "opencode_zen", "zen"), env_vars=("OPENCODE_ZEN_API_KEY",),
     base_url="https://opencode.ai/zen/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="gemini-3-flash",
+    # No default_aux_model: auxiliary tasks use the main model (retired relay ids emptied, #133181).
 )
 
 opencode_go = OpenCodeGoProfile(
     name="opencode-go", aliases=("opencode_go", "go", "opencode-go-sub"), env_vars=("OPENCODE_GO_API_KEY",),
     base_url="https://opencode.ai/zen/go/v1", default_headers=dict(_ATTRIBUTION_HEADERS),
-    default_aux_model="glm-5",
     # The Go relay's upstream validates tool content as a strict string: list-type tool
     # content (native vision embeds) 422s with ``messages.N.tool.content.str Input should
     # be a valid string`` (Console Go, #104731) or 400s ``text is not set`` (MiMo, #47026),

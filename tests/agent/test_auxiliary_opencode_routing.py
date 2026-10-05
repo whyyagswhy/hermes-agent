@@ -69,3 +69,11 @@ def test_named_custom_opencode_family_entry_with_declared_api_mode_is_honoured()
     assert resolved == "gpt-5.6-luna"
     assert type(client) is OpenAI
     assert str(client.base_url).rstrip("/") == "https://opencode.ai/zen/go/v1"
+
+
+@pytest.mark.parametrize("provider", ["opencode-zen", "opencode-go"])
+def test_opencode_aux_model_empty_fallback_ladder_skips(provider):
+    """Retired relay ids are emptied out, not repointed (#133181): no profile pin, no legacy fallback."""
+    assert aux._get_aux_model_for_provider(provider) == ""
+    assert aux._get_aux_model_for_provider(provider, prefer_fast=True) == ""
+    assert provider not in aux._API_KEY_PROVIDER_AUX_MODELS_FALLBACK
