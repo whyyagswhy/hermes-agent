@@ -71,7 +71,13 @@ _PRUNE_NUM_FILTERS = (
     "min_tool_calls", "max_tool_calls")
 
 
-_PRUNE_ROW_KEYS = ("id", "source", "title", "model", "started_at", "last_active", "message_count")
+# Projection of list_prune_candidates rows served to prune/archive dry-run clients; keep in sync
+# with the SELECT in SessionMaintenanceMixin.list_prune_candidates (every filtered value must be visible).
+_PRUNE_ROW_KEYS = (
+    "id", "source", "title", "model", "started_at", "last_active", "ended_at",
+    "message_count", "archived", "input_tokens", "output_tokens", "tool_call_count",
+    "actual_cost_usd", "estimated_cost_usd", "billing_provider", "git_branch",
+    "end_reason", "pinned", "cwd", "user_id", "chat_id", "chat_type")
 
 
 def _prune_sessions(body: SessionPrune):

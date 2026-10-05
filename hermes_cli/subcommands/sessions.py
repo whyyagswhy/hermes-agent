@@ -25,6 +25,14 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_list.add_argument("--workspace", metavar="NEEDLE",
         help="Only sessions in one workspace: a git repo root or project dir "
         "(matched by path substring or basename).")
+    sessions_list.add_argument("--columns", metavar="COLS",
+        help="Comma-separated columns to show (choices: id,title,preview,source,model,last_active,"
+        "started,messages,tokens,cost,workspace,cwd,branch,pinned; cost shows actual where reported, "
+        "else an estimate marked ~ — estimates undercount up to 4.9x)")
+    sessions_list.add_argument("--sort", metavar="KEY",
+        help="Sort by KEY (choices: last_active,started,messages,tokens,cost,title; prefix '-' for "
+        "descending, e.g. --sort=-last_active (the '=' is required: a space-separated -KEY reads as a flag); default order is started, newest first)")
+    add_json_flag(sessions_list, "Emit a machine-readable JSON array of the selected columns")
 
     _filter_args = (
         ("--newer-than", dict(metavar="AGE", help="Only match sessions active within the last AGE "

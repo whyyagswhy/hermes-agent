@@ -40,6 +40,17 @@ def coerce_epoch(value: Any, *, session_id: Optional[str] = None, field: str = "
     return ts
 
 
+def format_epoch(ts: Optional[float], *, session_id: Optional[str] = None) -> str:
+    """Render an epoch timestamp as a short local-time string; ``-`` when unset or corrupt.
+
+    The one shared absolute-date formatter for session listings and prune/archive previews
+    (``session_filters.format_epoch`` re-exports this; do not add a second copy).
+    """
+    if (ts := coerce_epoch(ts, session_id=session_id)) is None:
+        return "-"
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
 def relative_time(ts, *, session_id: Optional[str] = None) -> str:
     """Format a timestamp as relative time (e.g., '2h ago', 'yesterday'); ``?`` when unset or corrupt."""
     if not ts or (ts := coerce_epoch(ts, session_id=session_id, field="last_active")) is None:

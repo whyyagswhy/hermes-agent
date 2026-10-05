@@ -255,6 +255,166 @@ def _cmd_import(args):
         return 1
 
 
+def _actual_vs_estimated_cost(row) -> str:
+    """Cost cell: actual where reported, else the estimate.
+
+    Estimates undercount real spend by up to 4.9x (#109976), so the basis is always labelled —
+    never a bare number that reads as exact.
+    """
+    actual = row.get("actual_cost_usd") or 0
+    if actual:
+        return f"${actual:.2f} actual"
+    return f"~${row.get('estimated_cost_usd') or 0:.2f} est"
+
+
+def _prune_preview_columns(filters):
+    """Extra ``label value`` segments for prune/archive preview rows.
+
+    One segment per filter family selecting on a column the base line
+    (id / last activity / source / model / message count / title) does not show, so the
+    confirmation lists the values it is about to act on. ``(label, renderer)`` pairs.
+    """
+    from hermes_cli.session_filters import format_epoch
+    columns = []
+    if filters.get("started_before") is not None or filters.get("started_after") is not None:
+        columns.append(("started", lambda s: format_epoch(s.get("started_at"))))
+    if filters.get("end_reason"):
+        columns.append(("end", lambda s: str(s.get("end_reason") or "-")))
+    if filters.get("cwd_prefix"):
+        columns.append(("cwd", lambda s: str(s.get("cwd") or "-")[:40]))
+    if filters.get("provider"):
+        columns.append(("provider", lambda s: str(s.get("billing_provider") or "-")))
+    if filters.get("user_id"):
+        columns.append(("user", lambda s: str(s.get("user_id") or "-")))
+    if filters.get("chat_id"):
+        columns.append(("chat", lambda s: str(s.get("chat_id") or "-")))
+    if filters.get("chat_type"):
+        columns.append(("chat-type", lambda s: str(s.get("chat_type") or "-")))
+    if filters.get("branch_like"):
+        columns.append(("branch", lambda s: str(s.get("git_branch") or "-")[:30]))
+    if filters.get("min_tokens") is not None or filters.get("max_tokens") is not None:
+        columns.append(("tokens", lambda s: str((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0))))
+    if filters.get("min_cost") is not None or filters.get("max_cost") is not None:
+        columns.append(("cost", _actual_vs_estimated_cost))
+    if filters.get("min_tool_calls") is not None or filters.get("max_tool_calls") is not None:
+        columns.append(("tools", lambda s: str(s.get("tool_call_count") or 0)))
+    return columns
+
+
+#: Columns selectable via `sessions list --columns` (also the JSON keys for `--json`).
+_LIST_COLUMNS = (
+    "id", "title", "preview", "source", "model", "last_active", "started",
+    "messages", "tokens", "cost", "workspace", "cwd", "branch", "pinned")
+#: Keys accepted by `sessions list --sort` (`-key` = descending).
+_LIST_SORT_KEYS = ("last_active", "started", "messages", "tokens", "cost", "title")
+#: Table columns when `--columns` is omitted but `--sort` is given.
+_LIST_DEFAULT_COLUMNS = ("id", "title", "source", "last_active", "messages")
+
+
+def _list_column_text(name, row, ws):
+    """Human-readable cell for a `--columns` name (dates share the session_filters formatter)."""
+    from hermes_cli.session_filters import format_epoch
+    if name == "title":
+        return (row.get("title") or "\u2014")[:40]
+    if name == "preview":
+        return (row.get("preview") or "")[:48]
+    if name == "model":
+        return str(row.get("model") or "-").split("/")[-1][:24]
+    if name == "last_active":
+        return format_epoch(row.get("last_active"))
+    if name == "started":
+        return format_epoch(row.get("started_at"))
+    if name == "messages":
+        return str(row.get("message_count") or 0)
+    if name == "tokens":
+        return str((row.get("input_tokens") or 0) + (row.get("output_tokens") or 0))
+    if name == "cost":
+        return _actual_vs_estimated_cost(row)
+    if name == "workspace":
+        return ws(row)
+    if name == "cwd":
+        return str(row.get("cwd") or "-")[:40]
+    if name == "branch":
+        return str(row.get("git_branch") or "-")[:24]
+    if name == "pinned":
+        return "yes" if row.get("pinned") else "no"
+    if name == "id":
+        return str(row.get("id") or "")
+    return str(row.get("source") or "-") if name == "source" else str(row.get(name) or "-")
+
+
+def _list_column_json(name, row, ws):
+    """Machine-readable value for a `--columns` name (raw numbers/epochs, not display strings)."""
+    if name == "messages":
+        return int(row.get("message_count") or 0)
+    if name == "tokens":
+        return int((row.get("input_tokens") or 0) + (row.get("output_tokens") or 0))
+    if name == "cost":
+        actual = row.get("actual_cost_usd") or 0
+        if actual:
+            return {"value": float(actual), "basis": "actual"}
+        return {"value": float(row.get("estimated_cost_usd") or 0), "basis": "estimated"}
+    if name == "pinned":
+        return bool(row.get("pinned"))
+    if name == "last_active":
+        return row.get("last_active")
+    if name == "started":
+        return row.get("started_at")
+    if name == "workspace":
+        return ws(row)
+    return row.get(name)
+
+
+def _list_sort_value(name, row):
+    if name == "started":
+        return row.get("started_at") or 0
+    if name == "messages":
+        return row.get("message_count") or 0
+    if name == "tokens":
+        return (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+    if name == "cost":
+        return (row.get("actual_cost_usd") or 0) or (row.get("estimated_cost_usd") or 0)
+    if name == "title":
+        return row.get("title") or ""
+    return row.get("last_active") or 0  # last_active
+
+
+def _cmd_list_tabular(args, sessions, ws):
+    """`sessions list --columns/--json/--sort`: explicit-column rendering of *sessions*."""
+    raw_columns = getattr(args, "columns", None)
+    if raw_columns:
+        columns = [c.strip().lower() for c in str(raw_columns).split(",") if c.strip()]
+    elif getattr(args, "json", False):
+        columns = list(_LIST_COLUMNS)
+    else:
+        columns = list(_LIST_DEFAULT_COLUMNS)
+    unknown = [c for c in columns if c not in _LIST_COLUMNS]
+    if unknown:
+        print(f"Error: unknown column(s) {', '.join(unknown)}. Choices: {', '.join(_LIST_COLUMNS)}.")
+        return 1
+    if not columns:
+        print(f"Error: no columns selected. Choices: {', '.join(_LIST_COLUMNS)}.")
+        return 1
+    sort_arg = getattr(args, "sort", None)
+    if sort_arg:
+        key, descending = (sort_arg[1:], True) if sort_arg.startswith("-") else (sort_arg, False)
+        if key.lower() not in _LIST_SORT_KEYS:
+            print(f"Error: unknown sort key '{sort_arg}'. "
+                  f"Choices: {', '.join(_LIST_SORT_KEYS)} (prefix '-' for descending).")
+            return 1
+        sessions = sorted(sessions, key=lambda s: _list_sort_value(key.lower(), s), reverse=descending)
+    if getattr(args, "json", False):
+        print(json.dumps([{c: _list_column_json(c, s, ws) for c in columns} for s in sessions],
+                         ensure_ascii=False))
+        return
+    widths = [min(max(len(c), *(len(_list_column_text(c, s, ws)) for s in sessions)), 42)
+              for c in columns]
+    print("  ".join(f"{c:<{w}}" for c, w in zip(columns, widths)))
+    print("  ".join("\u2500" * w for w in widths))
+    for s in sessions:
+        print("  ".join(f"{_list_column_text(c, s, ws):<{w}}" for c, w in zip(columns, widths)))
+
+
 # -- handlers that receive an open SessionDB ----------------------------------
 
 def _default_exclude(args):
@@ -299,6 +459,11 @@ def _cmd_list(db, args):
     def _src(s):  # current routing platform; "<created>→<current>" when provenance diverged (#56439)
         created = s.get("created_source") or ""
         return f"{created}→{s['source']}" if created and created != s["source"] else s["source"]
+    if getattr(args, "columns", None) or getattr(args, "sort", None) or getattr(args, "json", False):
+        result = _cmd_list_tabular(args, sessions, _ws)
+        if truncated and not getattr(args, "json", False):
+            print_truncated(None, f"use --limit {limit * 2} to see more")
+        return result
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
@@ -740,10 +905,19 @@ def _cmd_prune_or_archive(db, args, action):
     if args.dry_run or not args.yes:
         shown = candidates if args.dry_run else candidates[:15]
         print(f"{len(candidates)} session(s) match ({describe_filters(filters)}; {_span}):")
+        extra_columns = _prune_preview_columns(filters)
+        if any(label == "cost" for label, _ in extra_columns):
+            print("  (costs show actual where reported, else an estimate - "
+                  "estimates undercount up to 4.9x.)")
         for s in shown:
             model = (s.get("model") or "-").split("/")[-1][:24]
-            print(f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
-                  f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
+            line = (f"  {s['id']}  {format_epoch(s.get('last_active')):<17} {s['source']:<10} {model:<24} "
+                    f"{s['message_count']:>4} msgs  {(s.get('title') or '')[:36]}")
+            for label, render in extra_columns:
+                line += f"  {label} {render(s)}"
+            if s.get("pinned"):
+                line += "  [pinned]"
+            print(line)
         if len(candidates) > len(shown):
             print_truncated(len(candidates) - len(shown))
         if args.dry_run:

@@ -267,7 +267,11 @@ class SessionMaintenanceMixin:
         return [dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            {_LAST_ACTIVE_SQL} AS last_active,
-                           s.ended_at, s.message_count, s.archived
+                           s.ended_at, s.message_count, s.archived,
+                           s.input_tokens, s.output_tokens, s.tool_call_count,
+                           s.actual_cost_usd, s.estimated_cost_usd, s.billing_provider,
+                           s.git_branch, s.end_reason, s.pinned, s.cwd,
+                           s.user_id, s.chat_id, s.chat_type
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
 
