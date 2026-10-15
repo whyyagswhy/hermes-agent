@@ -26,6 +26,16 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+@pytest.fixture(autouse=True)
+def _no_sealed_payload_probe(monkeypatch):
+    """Sealed installs keep manifest.json beside the checkout; importing
+    gateway.run (via string-target patches below) would otherwise probe the
+    real home and trip the home-I/O guard (issue #139229). These tests never
+    exercise payload probing, so stub it to the no-manifest answer."""
+    monkeypatch.setattr("pm.environments._payload_manifest", lambda root: None)
+
+
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
