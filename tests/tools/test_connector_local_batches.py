@@ -111,3 +111,36 @@ def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
         middleware_trace=[], enabled_toolsets=None, disabled_toolsets=None))
     assert 'Retry with only: {"calls":[{"name":"session_search","arguments":{"query":"alpha"}}]}' in result["error"]
     assert invoked == []
+
+
+def test_local_batch_over_the_dispatch_cap_rejection_names_the_cap(monkeypatch):
+    """#139282: the agent-loop expansion (agent/tool_call_batches.py) splits local
+    batches of 2..MAX_CALLS_PER_DISPATCH into single-entry calls and leaves larger
+    ones intact for the dispatcher — that rejection must name the 10-entry cap,
+    not restate the one-entry-per-call correction a smaller batch would get."""
+    import model_tools
+    from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+    from tools.tool_search import resolve_underlying_call
+
+    calls = [{"name": "todo_list", "arguments": {}} for _ in range(MAX_CALLS_PER_DISPATCH + 1)]
+    name, _args, error = resolve_underlying_call({"calls": calls})
+    assert name is None
+    assert f"too many calls: {len(calls)} > max {MAX_CALLS_PER_DISPATCH}." in error
+    assert "exactly one entry" not in error
+    invoked = []
+    monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
+    result = json.loads(model_tools.handle_function_call(
+        "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
+    assert f"too many calls: {len(calls)} > max {MAX_CALLS_PER_DISPATCH}." in result["error"]
+    assert invoked == []
+
+
+def test_local_batch_at_the_dispatch_cap_keeps_the_single_entry_correction():
+    """The split boundary is exclusive: a batch at exactly MAX_CALLS_PER_DISPATCH
+    still takes the dispatcher's one-entry correction (the <= cap case)."""
+    from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+    from tools.tool_search import resolve_underlying_call
+
+    calls = [{"name": "todo_list", "arguments": {}} for _ in range(MAX_CALLS_PER_DISPATCH)]
+    name, _args, error = resolve_underlying_call({"calls": calls})
+    assert name is None and "exactly one entry" in error

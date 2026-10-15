@@ -26,6 +26,7 @@ from tools.tool_search_catalog import (
 from tools.tool_search_validation import (
     local_batch_error, normalize_tool_call_entries, not_deferrable_error, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
+from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
 from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
 
@@ -298,7 +299,8 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
         _bridge_schema(
             TOOL_CALL_NAME,
             "Invoke deferred tools: `calls` is an array of {name, arguments}, one entry per "
-            "invocation (batch independent calls; results come back in order). Arguments match "
+            f"invocation (batch independent calls, at most {MAX_CALLS_PER_DISPATCH} per batch; "
+            "results come back in order). Arguments match "
             f"the schema from `{TOOL_DESCRIBE_NAME}`; approvals and hooks apply as usual.",
             {
                 "calls": {
@@ -311,7 +313,8 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
                         },
                         "required": ["name", "arguments"],
                     },
-                    "description": "One or more independent deferred tool invocations.",
+                    "description": f"One or more independent deferred tool invocations, "
+                                   f"at most {MAX_CALLS_PER_DISPATCH} per batch.",
                 },
             },
             ["calls"],
@@ -573,6 +576,12 @@ def resolve_underlying_call(args: dict[str, Any]) -> tuple[Optional[str], dict[s
     if err:
         return None, {}, err
 
+    if len(entries) > MAX_CALLS_PER_DISPATCH:
+        # The agent loop only splits local batches up to the cap
+        # (agent/tool_call_batches.py, #139282); anything longer lands here
+        # intact and must name the cap, not the single-entry correction.
+        return None, {}, (f"too many calls: {len(entries)} > max {MAX_CALLS_PER_DISPATCH}. "
+                          "Retry with fewer calls per batch.")
     if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
         return None, {}, local_batch_error(entries)
     if is_connector_name(entries[0]["name"]):
