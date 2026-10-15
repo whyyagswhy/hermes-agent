@@ -250,6 +250,35 @@ class TestClassifier:
         assert js.index("origin_changed") < js.index("querySelectorAll")
 
 
+class TestBuildFillJsPlaceholders:
+    @staticmethod
+    def _fills_of(js: str) -> list:
+        match = re.search(r"const fills = (.*?);", js, re.DOTALL)
+        assert match is not None
+        return json.loads(match.group(1))
+
+    def test_placeholder_text_inside_values_survives(self):
+        # #139369: chained str.replace rescans replacement text, so a saved
+        # value containing __NONCE__ was rewritten by the later replace.
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "pa__NONCE__ss"}],
+            expected_origin="https://example.com",
+            nonce="abc123",
+        )
+        assert self._fills_of(js) == [
+            {"index": 0, "token": "current-password", "value": "pa__NONCE__ss"}
+        ]
+        assert '"abc123"' in js
+
+    def test_placeholder_text_inside_origin_survives(self):
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://__NONCE__.example.com",
+            nonce="abc123",
+        )
+        assert '"https://__NONCE__.example.com"' in js
+
+
 # ---------------------------------------------------------------------------
 # Browser tool: origin binding + gating
 # ---------------------------------------------------------------------------

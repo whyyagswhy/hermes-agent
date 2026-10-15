@@ -295,8 +295,15 @@ def build_fill_js(fills: list[dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    # One pass: chained str.replace rescans replacement text, so a saved value
+    # containing a placeholder (e.g. pa__NONCE__ss) was rewritten by the later
+    # replace and the script failed to parse (#139369).
+    rendered = {
+        "__EXPECTED_ORIGIN__": json.dumps(expected_origin),
+        "__FILLS__": payload,
+        "__NONCE__": json.dumps(nonce),
+    }
+    return re.sub(r"__EXPECTED_ORIGIN__|__FILLS__|__NONCE__", lambda m: rendered[m.group(0)], _FILL_JS_TEMPLATE)
 
 
 _FILL_JS_TEMPLATE = """(() => {
