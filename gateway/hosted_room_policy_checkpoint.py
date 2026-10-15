@@ -168,7 +168,45 @@ class HostedRoomPolicyCheckpoint:
         events_by_seq = {
             int(event["seq"]): event
             for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
+        self._close_settled_source_users(conn, room_id=room_id, events_by_seq=events_by_seq)
         return [events_by_seq[seq] for seq in sorted(events_by_seq)]
+
+    @staticmethod
+    def _close_settled_source_users(
+        conn: sqlite3.Connection, *, room_id: str, events_by_seq: dict[int, dict[str, Any]]
+    ) -> None:
+        """Add canonical source users retained settlements still reference.
+
+        A non-pass turn.settled survives in the bounded projection through its
+        committed reply's settled_seq reference after its originating
+        message.user ages out of the transcript window; downstream discussion
+        validation then rejects the settlement (#139347). Load only the missing
+        canonical sources by room/event identity: visible retention stays
+        bounded and a genuinely absent durable source still raises.
+        """
+        known_ids = {str(event.get("event_id")) for event in events_by_seq.values()}
+        missing: list[str] = []
+        for event in events_by_seq.values():
+            if event.get("kind") != "turn.settled":
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping) or payload.get("passed"):
+                continue
+            source_id = _text(payload, "discussion_event_id")
+            if source_id and source_id not in known_ids and source_id not in missing:
+                missing.append(source_id)
+        for source_id in missing:
+            # One bounded row read per missing identity.
+            row = conn.execute(
+                f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events "
+                "WHERE room_id=? AND event_id=? AND kind='message.user'",
+                (room_id, source_id)).fetchone()
+            if row is None:
+                continue
+            source = _event_from_room_row(row)
+            if int(source["seq"]) not in events_by_seq:
+                events_by_seq[int(source["seq"])] = source
+                known_ids.add(source_id)
 
     # -- per-kind projection handlers (dispatched by _apply_event) -----------
 
