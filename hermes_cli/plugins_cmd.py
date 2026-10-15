@@ -868,18 +868,27 @@ def _scan_level(base: Path, source: str, skip_names: set, prefix: str, depth: in
 def _discover_all_plugins() -> list:
     """``(name, version, description, source, dir_path, key)`` for every plugin the loader sees,
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
-    displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
+    displace a directory plugin of the same key, name, or install directory (see
+    ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
     # memory/, context_engine/, computer_use/ and model-providers/ load through dedicated registries, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
+    from hermes_cli.plugins_manifest import directory_plugin_names, entrypoint_matches_directory
     for base, source, skip in (
         (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "computer_use", "model-providers"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
-    # Entry-point plugins are installed as Python packages, so they have no plugin directory.
+    # Entry-point plugins are installed as Python packages, so they have no plugin directory. One
+    # whose identity is already claimed by a directory row — key, declared name, or install
+    # directory (#139252) — must not surface as a second row.
+    directory_names = {n for (row_name, _version, _description, _source, row_path, row_key)
+                       in seen.values()
+                       for n in directory_plugin_names(key=row_key, name=row_name, path=row_path)}
     for m in discover_entrypoint_manifests():
+        if entrypoint_matches_directory(m, directory_names):
+            continue
         seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
     return list(seen.values())
 

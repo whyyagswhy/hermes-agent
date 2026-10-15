@@ -566,7 +566,10 @@ class TestManifestParsingRobustness:
 class TestDirectoryPluginKeepsIdentityOverEntryPoint:
     """A pyproject-wrapper plugin depends on a pip package that ships a ``hermes_agent.plugins``
     entry point under the SAME name. The installed directory must stay the plugin's identity (it
-    carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
+    carries catalog provenance and is what update/remove act on); the entry point must not displace it.
+    The identity match also covers the directory name and the declared manifest name: mnemosyne's
+    directory is ``plugins/mnemosyne`` while its manifest declares ``name: hermes-mnemosyne``, and the
+    pip dependency's entry point is ``mnemosyne`` (#139252)."""
 
     def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
         from hermes_cli.plugins_manifest import PluginManifest
@@ -586,3 +589,29 @@ class TestDirectoryPluginKeepsIdentityOverEntryPoint:
         rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
         assert [r[3] for r in rows] == ["user"]
         assert str(rows[0][4]).endswith("plugins/twin")
+
+    def test_loader_and_listing_match_entrypoint_by_directory_name(self, hermes_home, monkeypatch):
+        """#139252: the install directory is ``plugins/mnemosyne``, its manifest declares
+        ``name: hermes-mnemosyne``, and the pip dependency ships a ``mnemosyne`` entry point.
+        The directory keeps the identity via its directory name — one user row in the loader
+        and in the listing, no duplicate entrypoint row."""
+        from hermes_cli.plugins_manifest import PluginManifest
+        _write_plugin(hermes_home / "plugins", "mnemosyne",
+                      manifest_extra={"name": "hermes-mnemosyne", "version": "0.7.3"})
+        _enable(hermes_home, ["hermes-mnemosyne", "mnemosyne"])
+        mnemosyne_ep = PluginManifest(name="mnemosyne", version="0.7.3", description="pip twin",
+                                      source="entrypoint", path="mnemosyne_hermes:register", key="mnemosyne")
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [mnemosyne_ep])
+        monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [mnemosyne_ep], raising=False)
+        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [mnemosyne_ep])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        loaded = {k: p.manifest.source for k, p in mgr._plugins.items()
+                  if p.manifest.source in ("user", "entrypoint")}
+        assert loaded == {"hermes-mnemosyne": "user"}
+
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        rows = [r for r in _discover_all_plugins() if r[5] in ("mnemosyne", "hermes-mnemosyne")]
+        assert [r[3] for r in rows] == ["user"]
+        assert str(rows[0][4]).endswith("plugins/mnemosyne")

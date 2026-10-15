@@ -36,8 +36,8 @@ from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV, legacy_rel
 # Sibling modules' names are re-exported here (origin) so plugins and tests keep one import path.
 from hermes_cli.plugins_manifest import (
     _CONFIG_SCHEMA_TYPES, SUPPORTED_MANIFEST_VERSION, PluginManifest, _portable_skill_namespace,
-    manifest_key, parse_manifest_file, resolve_module_origin, resolve_plugin_load_order,
-    validate_config_schema,
+    directory_plugin_names, entrypoint_matches_directory, manifest_key, parse_manifest_file,
+    resolve_module_origin, resolve_plugin_load_order, validate_config_schema,
 )
 from hermes_cli.plugins_discovery import (
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
@@ -1402,10 +1402,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # Entry points are separate from the directory scan: the startup MCP probe must not import
         # or register them.
         # An installed directory plugin keeps its identity when its own pip dependency also ships an
-        # entry point under the same name (the pyproject wrapper shape): the directory is what the
-        # user installed, carries catalog provenance and is what update/remove act on.
-        directory_keys = {manifest_key(m) for m in manifests}
-        ep_manifests = [m for m in self._scan_entry_points() if manifest_key(m) not in directory_keys]
+        # entry point for it (the pyproject wrapper shape): match on the registry key, the declared
+        # name, and the directory it is installed as — ``plugins/mnemosyne`` declaring
+        # ``name: hermes-mnemosyne`` absorbs the ``mnemosyne`` entry point (#139252). The directory
+        # is what the user installed, carries catalog provenance and is what update/remove act on.
+        directory_names = {n for m in manifests
+                           for n in directory_plugin_names(key=m.key, name=m.name, path=m.path)}
+        ep_manifests = [m for m in self._scan_entry_points()
+                        if not entrypoint_matches_directory(m, directory_names)]
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
         disabled = _get_disabled_plugins()

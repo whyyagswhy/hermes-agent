@@ -338,6 +338,26 @@ def manifest_key(manifest: PluginManifest) -> str:
     return manifest.key or manifest.name
 
 
+def directory_plugin_names(key: str, name: str, path: str | Path | None = None) -> set[str]:
+    """Every name an installed directory plugin answers to when matching entry points: its
+    registry key, its declared ``name``, and the top-level directory name it is installed as.
+    The directory name is what catches a wrapper whose manifest name disagrees with the install
+    directory — ``plugins/mnemosyne`` declaring ``name: hermes-mnemosyne`` must absorb the
+    ``mnemosyne`` entry point of its own pip dependency, not list it as a second row (#139252)."""
+    names = {key or name, name}
+    if path:
+        names.add(Path(path).name)
+    return names
+
+
+def entrypoint_matches_directory(entrypoint: PluginManifest, directory_names: set[str]) -> bool:
+    """True when an installed directory plugin already claims the entry point's identity — its
+    registry key or declared name against the union of :func:`directory_plugin_names`. The
+    directory is what the user installed, carries catalog provenance and is what update/remove
+    act on, so a matching entry point steps aside (pyproject-wrapper shape, #113851/#139252)."""
+    return bool({manifest_key(entrypoint), entrypoint.name} & directory_names)
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
