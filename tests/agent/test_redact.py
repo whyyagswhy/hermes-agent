@@ -531,6 +531,34 @@ class TestApiKeyHeaders:
         result = redact_sensitive_text(text)
         assert "anotherOpaqueSecret" not in result
 
+    def test_api_key_shell_var_ref_preserved(self):
+        # ${K} / $TOKEN carry no secret bytes; masking them corrupts the
+        # echoed command and eats the closing quote (#141960).
+        for text in (
+            'curl -H "api-key: ${K}" http://x',
+            'curl -H "x-api-key: $TOKEN" http://x',
+        ):
+            result = redact_sensitive_text(text)
+            assert result == text, result
+
+    def test_api_key_command_substitution_preserved(self):
+        text = 'curl -H "api-key: $(cat k.txt)" http://x'
+        result = redact_sensitive_text(text)
+        assert result == text, result
+
+    def test_api_key_quoted_literal_keeps_quotes(self):
+        text = 'curl -H "x-api-key: sk-local-VERYsecret-999888" https://api.example.com'
+        result = redact_sensitive_text(text)
+        assert "VERYsecret" not in result
+        assert result.count('"') == 2, result
+        assert "https://api.example.com" in result
+
+    def test_api_key_dollar_junk_still_masked(self):
+        # $1abc / bare $ are not variable references; mask them.
+        for text in ("api-key: $1abc", "api-key: $"):
+            result = redact_sensitive_text(text)
+            assert "***" in result, result
+
 
 class TestTelegramTokens:
     def test_bot_token(self):

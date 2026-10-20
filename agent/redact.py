@@ -509,7 +509,24 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 # values would otherwise leak when a curl command is echoed into tool output.
 SECRET_HEADER_NAME_LIST = ("x-api-key", "x-goog-api-key", "api-key", "apikey", "x-api-token", "x-auth-token", "x-access-token")
 _SECRET_HEADER_NAMES = rf"(?:{'|'.join(SECRET_HEADER_NAME_LIST)})"
-_SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
+# Quoting-aware: the value never pulls in a surrounding shell quote (masking
+# `"secret"` keeps both quotes); the quote groups are re-emitted verbatim by
+# _sub_secret_header below (#141960).
+_SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)([\"']?)([^\s\"']+)([\"']?)", re.IGNORECASE)
+_SHELL_VAR_REF_RE = re.compile(_SHELL_VAR_REF)
+
+
+def _sub_secret_header(match: re.Match[str]) -> str:
+    """Mask an api-key-style header value without corrupting shell syntax.
+
+    A value that is a shell variable reference (``${K}``, ``$TOKEN``) or a
+    command substitution (``$(...)``) carries no secret bytes and is preserved
+    verbatim; surrounding quotes are re-emitted unmasked.
+    """
+    value = match.group(3)
+    if value.startswith("$(") or _SHELL_VAR_REF_RE.fullmatch(value):
+        return match.group(0)
+    return match.group(1) + match.group(2) + _mask_token(value) + match.group(4)
 
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
 # anchors the id at the start of its digit run: without it, a long run of digits
@@ -964,7 +981,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:
-        text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
+        text = _SECRET_HEADER_RE.sub(_sub_secret_header, text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     if "BEGIN" in text and "-----" in text:
