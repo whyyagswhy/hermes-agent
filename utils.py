@@ -136,7 +136,10 @@ _WINDOWS_CONTENDED_REPLACE_ERRORS = frozenset({5, 32, 33})
 _REPLACE_RETRY_ATTEMPTS = 4
 _REPLACE_RETRY_BASE_DELAY_S = 0.02
 _REPLACE_RETRY_MAX_DELAY_S = 0.1
-_CROSS_DEVICE_ERRNOS = (errno.EXDEV, errno.EBUSY)
+# Rename errnos that never clear on retry route straight to the copy/fsync/unlink
+# fallback: EXDEV/EBUSY (cross-device, bind-mount, busy file) plus ESTALE (stale file
+# handle — overlayfs raises errno 116 on rename; reopening by path re-resolves it).
+_CROSS_DEVICE_ERRNOS = (errno.EXDEV, errno.EBUSY, errno.ESTALE)
 
 
 def _is_contended_windows_replace_error(exc: OSError) -> bool:
@@ -180,8 +183,9 @@ def atomic_replace(tmp_path: str | Path, target: str | Path) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
     Resolves a symlink first so ``os.replace`` writes the real file in place and the symlink
-    survives. Otherwise identical to ``os.replace`` unless the rename fails with EXDEV/EBUSY
-    (cross-device, bind-mount, busy file: copy/fsync/unlink immediately — these never clear on
+    survives. Otherwise identical to ``os.replace`` unless the rename fails with
+    EXDEV/EBUSY/ESTALE (cross-device, bind-mount, busy file, stale handle:
+    copy/fsync/unlink immediately — these never clear on
     retry) or a Windows rename contended by another open handle (winerror 5/32/33: bounded retry,
     then in-place rewrite).
     """
