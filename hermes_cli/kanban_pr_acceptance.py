@@ -133,8 +133,30 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GateAuthError as exc:
+            if "HTTP 404" in str(exc):
+                # Branch not protected: no ruleset checks beyond the GraphQL
+                # branchProtectionRule already folded into required above.
+                rules = []
+            elif "HTTP 403" in str(exc):
+                # The GraphQL read above succeeded, so this login can see the
+                # repo: a 403 here is an entitlement fact, not broken
+                # credentials. Free-plan private repos never answer the rules
+                # endpoint, so required checks are unverifiable (#141987).
+                # Fail closed but say so, with the evidence read so far.
+                receipt.update(
+                    classification="protection_unavailable", enforced=False, required=[],
+                    detail=(f"GitHub does not serve branch rules for {repo}@{branch} "
+                            f"to this login ({exc}): private Free-plan repositories never "
+                            "answer the rules endpoint, so required checks cannot be verified. "
+                            "Upgrade the plan, make the repository public, or complete with a "
+                            "local-only contract."))
+                return receipt
+            else:
+                raise
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
