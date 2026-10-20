@@ -3478,6 +3478,18 @@ def set_config_value(key: str, value: str, force: bool = False):
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
+    # auxiliary.<task>.provider switches re-point that task block the same way
+    # model.provider re-points model: (#141832); capture the block old provider
+    # before the write so the stale route below can be synced.
+    _aux_key_parts = key.split(".")
+    _is_aux_provider_switch = (
+        len(_aux_key_parts) == 3 and _aux_key_parts[0] == "auxiliary" and _aux_key_parts[2] == "provider"
+    )
+    _old_aux_provider = None
+    if _is_aux_provider_switch:
+        _aux_parent = user_config.get("auxiliary")
+        _aux_before = _aux_parent.get(_aux_key_parts[1]) if isinstance(_aux_parent, dict) else None
+        _old_aux_provider = _aux_before.get("provider") if isinstance(_aux_before, dict) else None
     try:
         _set_nested(user_config, key, value)
     except ValueError as e:
@@ -3504,6 +3516,22 @@ def set_config_value(key: str, value: str, force: bool = False):
                 f"⚠ model.base_url ({user_config['model'].get('base_url')}) was set under {_old_provider} and "
                 f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
                 "`hermes config unset model.base_url` (and model.api_mode).", Colors.YELLOW)
+    _aux_path = f"auxiliary.{_aux_key_parts[1]}" if _is_aux_provider_switch else ""
+    _old_aux_display = str(_old_aux_provider or "").strip() or "the previous provider"
+    if _is_aux_provider_switch and _old_aux_display.lower() != str(value).strip().lower():
+        from hermes_cli.route_identity import drop_stale_model_route
+        _aux_block = user_config.get("auxiliary", {}).get(_aux_key_parts[1])
+        _aux_popped, _aux_unverified = drop_stale_model_route(_aux_block, value, user_config)
+        if _aux_popped:
+            _route_notice = (
+                "  Cleared " + ", ".join(f"{_aux_path}.{k} ({v})" for k, v in _aux_popped.items())
+                + f" — that route belonged to {_old_aux_display}, not {value}. {value}'s endpoint resolves "
+                f"automatically; set {_aux_path}.base_url again if you meant a custom endpoint.")
+        elif _aux_unverified:
+            _route_notice = color(
+                f"⚠ {_aux_path}.base_url ({_aux_block.get('base_url')}) was set under {_old_aux_display} and "
+                f"still applies to {value} — requests go there. If it is not {value}'s endpoint: "
+                f"`hermes config unset {_aux_path}.base_url` (and {_aux_path}.api_mode).", Colors.YELLOW)
     # api_base -> base_url alias at set-time too (mirrors _normalize_root_model_keys).
     if key.strip().lower() in ("model.api_base", "api_base"):
         # Normalize the api_base → base_url alias at set-time too (issue #8919), so a fresh `hermes config
