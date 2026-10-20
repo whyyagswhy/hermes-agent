@@ -13,10 +13,13 @@ import logging
 import os
 from pathlib import Path
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 from hermes_dir_acl import make_user_dir
 
 from hermes_constants import get_hermes_home
+
+if TYPE_CHECKING:
+    from tools.process_registry import ProcessSession
 
 logger = logging.getLogger("tools.process_registry")
 
@@ -133,3 +136,29 @@ class ProcessOutputLogMixin:
             self._finish_exited(session, -1, reason="lost", source="backend_lost")
         else:
             self._finish_exited(session, code)
+
+
+def coerce_log_paging_args(offset: Any, limit: Any) -> tuple:
+    """Coerce model-supplied read_log paging args to ints.
+
+    Paging args arrive as raw JSON, so a float or numeric-string offset/limit
+    would otherwise die in the slice with "TypeError: slice indices must be
+    integers..." (#141988); floats truncate toward zero. Unparseable input
+    raises ValueError for the caller to report as an error dict, and a None
+    limit means the default window (mirroring the None-offset tail default).
+    """
+    if limit is None:
+        limit = 200
+    try:
+        return (None if offset is None else int(offset), int(limit))
+    except (ValueError, TypeError) as exc:
+        raise ValueError(
+            f"offset and limit must be integers (got offset={offset!r}, limit={limit!r})"
+        ) from exc
+
+
+def _output_tail(session: "ProcessSession", n: int) -> str:
+    """Last *n* chars of the session output with ANSI sequences stripped."""
+    from tools.ansi_strip import strip_ansi
+
+    return strip_ansi(session.output_buffer[-n:])
