@@ -949,16 +949,43 @@ def enable_profile_log_routing(profile_homes: Sequence[str | Path]) -> bool:
         if listener is not None:
             listener.stop()
             _queue_listener = None
-        replacement = []
-        for existing in _queued_file_handlers:
-            if isinstance(existing, RotatingFileHandler):
-                replacement.append(_ProfileRoutingFileHandler(existing, homes))
-                _quietly(existing.close)
-            else:
-                replacement.append(existing)
-        _queued_file_handlers[:] = replacement
-        if listener is not None:
-            _start_queue_listener_locked()
+        previous = list(_queued_file_handlers)
+        try:
+            # Construct every router before closing any original: a construction
+            # failure leaves the static handlers untouched (#141958).
+            replacement = [
+                _ProfileRoutingFileHandler(existing, homes)
+                if isinstance(existing, RotatingFileHandler)
+                else existing
+                for existing in previous
+            ]
+            for router, existing in zip(replacement, previous):
+                if router is not existing:
+                    _quietly(existing.close)
+            _queued_file_handlers[:] = replacement
+            if listener is not None:
+                _start_queue_listener_locked()
+        except Exception:
+            # Never strand the process with no file sink: drop any installed
+            # routers, restore the static handlers, restart the listener, and
+            # fail loudly (#141958).
+            for handler in _queued_file_handlers:
+                if handler not in previous:
+                    _quietly(handler.close)
+            _queued_file_handlers[:] = previous
+            if listener is not None and _queue_listener is None:
+                try:
+                    _start_queue_listener_locked()
+                except Exception:
+                    logging.getLogger("hermes_logging").debug(
+                        "log-routing restore could not restart the queue listener",
+                        exc_info=True,
+                    )
+            logging.getLogger("hermes_logging").warning(
+                "could not enable per-profile log routing; keeping static file handlers",
+                exc_info=True,
+            )
+            return False
         return True
 
 
