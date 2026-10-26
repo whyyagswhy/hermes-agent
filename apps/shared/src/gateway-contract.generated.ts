@@ -5860,6 +5860,11 @@ export interface SetupReadyPayload {
   finished_at: number
   [key: string]: unknown
 }
+/** ``hermes_cli/nous_auth_keepalive.py::_announce_relogin_required`` — the stored Nous login died a terminal auth death (``invalid_grant``/revoked) and was quarantined; only a re-login restores it. Broadcast once per outage; the desktop raises a visible re-login notice (#145231). */
+export interface NousReloginRequiredPayload {
+  provider: string
+  message: string
+}
 /** Every ``_emit("error", …)`` site sets exactly ``message``. */
 export interface ErrorPayload {
   message: string
@@ -7344,6 +7349,8 @@ export interface BackendGatewayEventMap {
   'notification.clear': NotificationClearPayload
   /** Show / replace a keyed out-of-band notice (toast or status bar). */
   'notification.show': NotificationShowPayload
+  /** The background Nous keepalive hit a terminal auth death and cleared the stored login (broadcast, once per outage); the desktop raises a re-login notice. */
+  'nous_auth.relogin_required': NousReloginRequiredPayload
   /** A first-run onboarding run ended; sent to every connected window. */
   'onboarding.ended': OnboardingEndedPayload
   /** Pairing state moved; refetch pairing. */
@@ -7474,6 +7481,7 @@ export const GATEWAY_EVENT_TYPES = [
   'notice',
   'notification.clear',
   'notification.show',
+  'nous_auth.relogin_required',
   'onboarding.ended',
   'pairing.changed',
   'pane.reveal',
