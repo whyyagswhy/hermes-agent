@@ -111,3 +111,68 @@ def test_persisted_row_missing_git_metadata_is_enriched_on_hydration(monkeypatch
     finally:
         server._sessions.pop(sid, None)
         db.close()
+
+
+def test_dead_out_of_repo_worktree_heals_to_its_repo_root(tmp_path, monkeypatch):
+    "#145910: a removed out-of-repo worktree heals to its repo, not the bare parent folder."
+    import contextlib
+    import subprocess
+
+    repo = tmp_path / "repo"
+    wt_parent = tmp_path / "_worktrees"
+    wt_parent.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "t@t.t"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "t"], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "init"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(wt_parent / "feat")],
+        check=True,
+        capture_output=True,
+    )
+    wt = wt_parent / "feat"
+    assert wt.is_dir()
+    key = "worktree-session"
+    rows = {"cwd": str(wt), "git_branch": "feat", "git_repo_root": str(repo)}
+
+    class DB:
+        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None, **_kw):
+            if rows["cwd"] != cwd:
+                rows["git_branch"] = git_branch or None
+                rows["git_repo_root"] = git_repo_root or None
+            rows["cwd"] = cwd
+            return 3
+
+        def get_session(self, _key):
+            return dict(rows)
+
+        def publish_session_git_metadata(self, _sid, _cwd, _gen, branch, root):
+            rows["git_branch"] = branch
+            rows["git_repo_root"] = root
+            return True
+
+    @contextlib.contextmanager
+    def fake_db(_session):
+        yield DB()
+
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)], check=True
+    )
+    assert not wt.exists()
+    session = {"session_key": key, "cwd": str(wt)}
+    monkeypatch.setattr(server, "_session_is_local_backend", lambda _s: True)
+    monkeypatch.setattr(server, "_session_db", fake_db)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    healed = server._display_session_cwd(session)
+
+    assert healed == str(repo)
+    assert session["cwd"] == str(repo)
+    assert rows["git_repo_root"] == str(repo)

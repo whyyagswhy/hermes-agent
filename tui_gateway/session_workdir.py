@@ -382,10 +382,27 @@ def _resumable_stored_cwd(cwd, profile_home) -> str:
     return cwd
 
 
-def _heal_dead_cwd(cwd: str) -> str:
+def _stored_session_git_repo_root(session: dict | None) -> str | None:
+    """The DB row recorded repo root (None when unknown): the repo a dead worktree cwd belonged to."""
+    key = (session or {}).get("session_key")
+    if not key:
+        return None
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return None
+            row = db.get_session(key) if hasattr(db, "get_session") else None
+            root = (row or {}).get("git_repo_root")
+            return str(root) if root else None
+    except Exception:
+        logger.debug("failed to read stored session repo root", exc_info=True)
+        return None
+
+
+def _heal_dead_cwd(cwd: str, fallback_repo_root: str | None = None) -> str:
     """Resolve a session cwd inside a now-deleted directory (e.g. a removed linked worktree, which probes to no branch
     while the sidebar folds it to the main lane): walk up to the first existing ancestor and take its common git root.
-    Local backends only — a remote/SSH cwd may legitimately not exist on the host, so callers skip healing there."""
+    Local backends only — a remote/SSH cwd may legitimately not exist on the host, so callers skip healing there. Callers may pass the row stored repo root: a removed worktree then heals to the repo it belonged to instead of the bare parent folder."""
     raw = (cwd or "").strip()
     if not raw or os.path.isdir(raw):
         return raw
@@ -400,7 +417,12 @@ def _heal_dead_cwd(cwd: str) -> str:
     if not os.path.isdir(probe):
         return raw
     with contextlib.suppress(Exception):
-        return git_probe.common_repo_root(probe) or git_probe.repo_root(probe) or probe
+        root = git_probe.common_repo_root(probe) or git_probe.repo_root(probe)
+        if root:
+            return root
+        if fallback_repo_root and os.path.isdir(fallback_repo_root):
+            return fallback_repo_root
+        return probe
     return probe
 
 
@@ -432,6 +454,11 @@ def _display_session_cwd(session: dict | None) -> str:
         return cwd
     healed = _heal_dead_cwd(cwd)
     if healed and healed != cwd and session is not None:
+        stored = _stored_session_git_repo_root(session)
+        if stored and stored != healed and os.path.isdir(stored):
+            with contextlib.suppress(Exception):
+                if not (git_probe.common_repo_root(healed) or git_probe.repo_root(healed)):
+                    healed = stored
         session["cwd"] = healed
         _persist_session_cwd_and_schedule_git_meta(session, healed)
     return healed
