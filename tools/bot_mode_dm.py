@@ -316,9 +316,9 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
         # A peer dm crosses installs: qualify the id with this host so the peer's own '<me>' stays distinct.
         from agent.turn_author import bot_author_id, local_origin
         peer_author = {**author, "id": bot_author_id(me, local_origin())}
-        # Pin the registry-owning profile: `hermes peer` resolves bot_peers via the profile-scoped
-        # load_config(), while the roster above reads the machine-root config — the CLI must run
-        # in that same profile or a secondary-profile bot sees an empty registry.
+        # Pin the profile the delivery runs as: `hermes peer` reads the same machine-root
+        # bot_peers registry the roster above does (#139219), so the pin is not needed to find the
+        # peer; it selects whose bot sends the dm.
         # The delivery runs in a background service context whose PATH lacks the gateway's
         # venv bin dir, so a bare "hermes" resolves to a system install and dies on import
         # under the wrong interpreter (#108628). _hermes_cli pins the entrypoint beside

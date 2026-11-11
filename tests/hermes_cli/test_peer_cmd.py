@@ -171,6 +171,67 @@ def test_add_list_remove_roundtrip(monkeypatch, capsys):
     assert "spark" not in store
 
 
+def test_peer_add_writes_the_machine_root_registry_the_tool_layer_reads(tmp_path, monkeypatch):
+    """#139219(B): ``bot_peers`` belongs to the machine root, not the active profile.
+
+    The tool/roster layer reads ``<root>/config.yaml`` (``tools.bot_mode_probe._peers``), while
+    this CLI read and wrote the active profile's copy. On a machine whose root carried no ``bot_peers`` that left a
+    healthy ``hermes peer list`` beside an EMPTY tool-layer registry, so every bare-name
+    cross-machine target fell through to the local roster instead of a peer.
+    """
+    from hermes_cli.config import read_user_config_raw
+    from tools.bot_mode_dm_coordination import _destination
+    from tools.bot_mode_probe import _peers
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text("model: keep-me\n", encoding="utf-8")
+    (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="add", name="macair", url="http://macair.lan:8377", key="", note="")
+    )
+    assert rc == 0
+
+    # The registry the tool layer actually reads.
+    assert _peers(root) == ["macair"]
+    # So `hermes peer list` and the tool layer now agree.
+    assert peer_cmd._load_peers() == {"macair": {"url": "http://macair.lan:8377"}}
+    # The root's unrelated settings survive the write.
+    assert read_user_config_raw(root / "config.yaml")["model"] == "keep-me"
+    # And a bare name resolves as a peer instead of falling through to the local roster.
+    sender = SimpleNamespace(peers=_peers(root), roster_homes={}, root=root)
+    assert _destination("macair", sender) == ("peer", "macair/")
+
+
+def test_peer_add_migrates_a_legacy_profile_scoped_registry_to_the_root(tmp_path, monkeypatch):
+    """A registration the pre-fix profile-scoped write left behind reaches the one registry the
+    tool layer reads, so the upgrade neither loses it nor lets `peer rm` resurrect it."""
+    from hermes_cli.config import read_user_config_raw
+    from tools.bot_mode_probe import _peers
+
+    root = tmp_path / "hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents=True)
+    (root / "config.yaml").write_text("model: keep-me\n", encoding="utf-8")
+    (profile / "config.yaml").write_text(
+        "bot_peers:\n  oldbox:\n    url: http://oldbox.lan:8377\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+
+    assert peer_cmd._load_peers()["oldbox"] == {"url": "http://oldbox.lan:8377"}
+
+    rc = peer_cmd.cmd_peer(
+        SimpleNamespace(peer_action="add", name="macair", url="http://macair.lan:8377", key="", note="")
+    )
+    assert rc == 0
+
+    assert _peers(root) == ["macair", "oldbox"]
+    assert "bot_peers" not in read_user_config_raw(profile / "config.yaml")
+    assert read_user_config_raw(root / "config.yaml")["model"] == "keep-me"
+
+
 def test_add_rejects_bad_name_and_url(monkeypatch):
     monkeypatch.setattr(peer_cmd, "_load_peers", dict)
     monkeypatch.setattr(peer_cmd, "_save_peers", lambda peers: None)

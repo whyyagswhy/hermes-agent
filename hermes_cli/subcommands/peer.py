@@ -39,20 +39,78 @@ def _peer_key_env(name: str) -> str:
     return f"HERMES_PEER_{name.upper().replace('-', '_')}_KEY"
 
 
-def _load_peers() -> dict:
-    from hermes_cli.config import load_config
+def _registry_config_path():
+    """The ``config.yaml`` that owns ``bot_peers``: the machine root's, not the active profile's.
 
-    cfg = load_config() or {}
-    peers = cfg.get("bot_peers")
-    return peers if isinstance(peers, dict) else {}
+    Every other reader of the registry reads that file: the tool/roster layer bypasses the config
+    loader and reads ``<root>/config.yaml`` directly (``tools.bot_mode_probe._peers``,
+    ``tools.bot_mode_dm_chain._peer_url``). Writing the active profile's copy instead left a
+    machine whose root had no ``bot_peers`` with a healthy ``hermes peer list`` beside an EMPTY
+    tool-layer registry, so every bare-name cross-machine target fell through to the local roster
+    instead of a peer (#139219). ``-p`` scopes this CLI's config; the peer registry is
+    install-wide either way.
+    """
+    from hermes_constants import get_default_hermes_root
+
+    return get_default_hermes_root() / "config.yaml"
+
+
+def _peers_in(config_path) -> dict:
+    """The ``bot_peers`` mapping written in *config_path*; an absent file is empty, not an error."""
+    from hermes_cli.config import read_user_config_raw
+
+    section = read_user_config_raw(config_path).get("bot_peers")
+    return dict(section) if isinstance(section, dict) else {}
+
+
+def _load_peers() -> dict:
+    from hermes_cli.config import get_config_path
+
+    registry = _registry_config_path()
+    profile_config = get_config_path()
+    if profile_config == registry:  # no named profile: the active config IS the machine root
+        return _peers_in(registry)
+    # A registration the pre-fix profile-scoped write left behind stays visible (the root wins a
+    # clash) so an upgrade does not empty an existing list; the next save moves it to the root.
+    return {**_peers_in(profile_config), **_peers_in(registry)}
 
 
 def _save_peers(peers: dict) -> None:
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import (
+        atomic_config_replace,
+        get_config_path,
+        is_managed,
+        load_config,
+        managed_error,
+        read_user_config_raw,
+        save_config,
+    )
 
-    cfg = load_config() or {}
-    cfg["bot_peers"] = peers
-    save_config(cfg)
+    registry = _registry_config_path()
+    profile_config = get_config_path()
+    if profile_config == registry:  # no named profile: unchanged path through the config loader
+        cfg = load_config() or {}
+        cfg["bot_peers"] = peers
+        save_config(cfg)
+        return
+
+    if is_managed():
+        managed_error("save the peer registry")
+        return
+
+    root_cfg = read_user_config_raw(registry)
+    if peers:
+        root_cfg["bot_peers"] = peers
+    else:
+        root_cfg.pop("bot_peers", None)
+    atomic_config_replace(registry, root_cfg)
+
+    # The profile-scoped copy is a stale duplicate now; drop it, or `peer rm` reads it back and
+    # resurrects a peer the root no longer has.
+    profile_cfg = read_user_config_raw(profile_config)
+    if "bot_peers" in profile_cfg:
+        profile_cfg.pop("bot_peers")
+        atomic_config_replace(profile_config, profile_cfg)
 
 
 def _peer_secret(name: str) -> str:
