@@ -396,19 +396,19 @@ def normalize_profile_name(name: str) -> str:
     return stripped.lower()
 
 
-def validate_profile_name(name: str) -> None:
+def validate_profile_name(name: str, *, allow_reserved: bool = False) -> None:
     """Raise ``ValueError`` unless *name* is a valid profile id (strict as-given lowercase —
-    normalize mixed-case input first) and not in ``_RESERVED_NAMES``; ``default`` passes.
-
-    Callers that accept mixed-case or title-cased input from users (dashboard UI, CLI args) should call
-    :func:`normalize_profile_name` first. This separation keeps validate honest about what the on-disk
-    directory name must look like, while ingress-point normalization handles UX flexibility (see #18498).
+    normalize mixed-case input first) and not in ``_RESERVED_NAMES``; ``default`` passes. Validate
+    stays honest about the on-disk name; ingress-point normalization handles UX (see #18498).
+    ``allow_reserved`` skips only the ``_RESERVED_NAMES`` check, for cleaning up a profile that
+    already exists on disk (#153287): an older ``create`` built the skeleton first. The id-shape
+    check still runs, since the name is a path component under ``profiles/``.
     """
     if name == "default":
         return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
         raise _invalid_profile_name_error(name)
-    if name in _RESERVED_NAMES:
+    if not allow_reserved and name in _RESERVED_NAMES:
         raise ValueError(
             f"Profile name {name!r} is reserved — it collides with either "
             f"the Hermes installation itself or a common system binary.  "
@@ -423,16 +423,16 @@ def validate_alias_name(name: str) -> None:
         raise ValueError(f"Invalid alias name {name!r}. {_PROFILE_NAME_RULE}.")
 
 
-def _canon_valid(name: str) -> str:
+def _canon_valid(name: str, *, allow_reserved: bool = False) -> str:
     """normalize + validate in one step; returns the canonical id."""
     canon = normalize_profile_name(name)
-    validate_profile_name(canon)
+    validate_profile_name(canon, allow_reserved=allow_reserved)
     return canon
 
 
-def _existing_profile_dir(name: str) -> tuple[str, Path]:
+def _existing_profile_dir(name: str, *, allow_reserved: bool = False) -> tuple[str, Path]:
     """``(canon, profile_dir)`` for an existing profile; FileNotFoundError otherwise."""
-    canon = _canon_valid(name)
+    canon = _canon_valid(name, allow_reserved=allow_reserved)
     profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
         raise _unknown_profile_error(canon)
@@ -1700,12 +1700,12 @@ class ProfileIdentitySettlementPending(RuntimeError):
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:
-    """Delete a profile, its wrapper script, and its gateway service (service disabled first
-    to prevent auto-restart, gateway stopped if running)."""
+    """Delete a profile, its wrapper script, and its gateway service (service disabled first to
+    prevent auto-restart; a reserved name is deletable when its directory exists, #153287)."""
     canon = normalize_profile_name(name)
     if canon == "default":
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
-    canon, profile_dir = _existing_profile_dir(canon)
+    canon, profile_dir = _existing_profile_dir(canon, allow_reserved=True)
     gw_running = _check_gateway_running(profile_dir)
     wrapper_path = _find_our_wrapper(canon)
     _print_delete_summary(canon, profile_dir, gw_running, wrapper_path)
@@ -2217,7 +2217,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
     ``display_name`` instead — the canonical id stays ``default``."""
-    old_canon = _canon_valid(old_name)
+    old_canon = _canon_valid(old_name, allow_reserved=True)
     if old_canon == "default":
         if not (new_name or "").strip():
             raise ValueError("Display name cannot be empty.")

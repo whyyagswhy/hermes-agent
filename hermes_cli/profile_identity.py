@@ -43,7 +43,7 @@ def migrate_profile_identity(old_name: str, new_name: str) -> bool:
     gateway would not accept the routing migration.
     """
     from hermes_cli.profiles import _canon_valid, _live_default_multiplexer, _unknown_profile_error, get_profile_dir
-    old_canon = _canon_valid(old_name)
+    old_canon = _canon_valid(old_name, allow_reserved=True)
     new_canon = _canon_valid(new_name)
     if "default" in (old_canon, new_canon):
         raise ValueError("Identity migration applies to named profiles only.")
@@ -75,7 +75,7 @@ def purge_profile_identity(profile: str) -> bool:
     not settled — by this process or by the live gateway.
     """
     from hermes_cli.profiles import _canon_valid, _live_default_multiplexer, profile_exists
-    canon = _canon_valid(profile)
+    canon = _canon_valid(profile, allow_reserved=True)
     if canon == "default":
         raise ValueError("Identity purge applies to named profiles only.")
     if profile_exists(canon):
