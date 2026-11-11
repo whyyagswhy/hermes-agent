@@ -279,6 +279,23 @@ def _sql_session_last_active(alias: str = "s") -> str:
     return _sql_freshest_of(f"{alias}.last_activity_at", f"{alias}.id", f"{alias}.started_at")
 
 
+def is_branch_fork(model_config: Any) -> bool:
+    """True when *model_config* marks a fork of an existing conversation (``_branched_from``).
+
+    A branch copies its parent's message rows byte-exact, so the child's freshest message carries
+    the parent's timestamp, and recency (:func:`_sql_freshest_of`) falls back to it: without a
+    stamp at creation the fork is ranked and displayed as old as the conversation it forked from
+    (#146712). A compression continuation IS the same conversation and must keep following its
+    chain's tip, so it is not a branch fork. Accepts a dict or its stored JSON text.
+    """
+    if isinstance(model_config, str):
+        try:
+            model_config = json.loads(model_config)
+        except ValueError:
+            return False
+    return isinstance(model_config, dict) and bool(model_config.get("_branched_from"))
+
+
 def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     """Same freshest-of expression keyed by a session-id SQL expression."""
     return _sql_freshest_of(

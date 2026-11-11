@@ -2,7 +2,7 @@
 import json
 import time
 
-from hermes_state_common import _MERGE_DISPLAY_META
+from hermes_state_common import _MERGE_DISPLAY_META, is_branch_fork
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -233,9 +233,9 @@ def insert_session_row_in_transaction(
            id, source, created_source, user_id, session_key, chat_id, chat_type, thread_id,
            model, model_config, system_prompt, system_prompt_hash,
            parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
-           origin_json, display_name, started_at
+           origin_json, display_name, started_at, last_activity_at
         )
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
                source = CASE
                    WHEN sessions.source = 'unknown'
@@ -272,12 +272,21 @@ def insert_session_row_in_transaction(
                    THEN NULL
                    ELSE sessions.system_prompt
                END,
+               -- A fork reaching an existing row keeps the stamp an earlier writer set.
+               last_activity_at = COALESCE(
+                   sessions.last_activity_at,
+                   excluded.last_activity_at
+               ),
 """ + _UPSERT_KEEP_EXISTING_SQL,
         (
             session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, model,
             json.dumps(model_config) if model_config else None, system_prompt_hash,
             parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
             display_name, time.time(),
+            # A branch forks a conversation that already has history: its copied rows carry the
+            # parent's timestamps, so without its own stamp the fresh fork sorts and displays as
+            # old as the conversation it came from (#146712).
+            time.time() if is_branch_fork(model_config) else None,
         ),
     )
     if system_prompt_hash is not None:

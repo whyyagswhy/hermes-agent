@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
-    is_automatic_end_reason)
+    is_automatic_end_reason, is_branch_fork)
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -352,9 +352,9 @@ class SessionCompressionMixin:
                    system_prompt_hash, tool_names,
                    parent_session_id, cwd, git_branch, git_repo_root,
                    profile_name, user_id, session_key, chat_id, chat_type,
-                   thread_id, display_name, origin_json, pinned, started_at,
+                   thread_id, display_name, origin_json, pinned, started_at, last_activity_at,
                    archived, auto_archived
-                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 child_session_id, source, created_source, model, json.dumps(model_config) if model_config else None,
                 system_prompt_hash, parent["tool_names"], parent_session_id, cwd or parent["cwd"], parent["git_branch"],
@@ -364,6 +364,11 @@ class SessionCompressionMixin:
                 parent["thread_id"], parent["display_name"], parent["origin_json"],
                 # The pin is lineage-wide (set_session_pinned); a segment published after it joins it.
                 int(parent["pinned"] or 0) if continuation else 0, time.time(),
+                # Canonical branch/reset verbs publish through here and their child is its own
+                # conversation: it copies the parent's messages, so it needs its own stamp or it
+                # sorts as old as the history it forked from (#146712). A continuation keeps the
+                # parent's recency and follows its chain's tip.
+                time.time() if is_branch_fork(model_config) else None,
                 # Inherit the lineage's archive state so a manually archived chat stays uniformly
                 # archived (a mixed lineage let the sweep re-stamp its fresh tip as auto-archived).
                 (parent["archived"] or 0) if continuation else 0,
