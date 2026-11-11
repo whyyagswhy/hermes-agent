@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime, timedelta
 
 from hermes_cli import nous_auth_keepalive as keepalive
 
@@ -302,3 +303,135 @@ def test_keepalive_stays_silent_without_connected_clients(monkeypatch):
     assert [(event, payload["provider"]) for event, payload in server.events] == [
         (keepalive.NOUS_RELOGIN_EVENT, "nous")
     ]
+
+
+# --- The one-notice latch must re-arm once the login works again -------------
+#
+# ``_relogin_announced`` keeps a flapping outage to one toast, which is right, but it is cleared
+# only from a successful *refresh*. A re-login writes fresh tokens to the auth state, and the pool
+# can still answer "no usable entry" for it -- the row the outage left DEAD shadows it -- so a
+# falsy pool result returns before anything consults the credential the user just repaired. The
+# latch then outlives the recovery and the next terminal death is silent.
+
+
+def _live_state(**overrides):
+    state = {
+        "provider": "nous",
+        "access_token": "fresh-access-token",
+        "refresh_token": "fresh-refresh-token",
+        "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+    }
+    state.update(overrides)
+    return state
+
+
+def _state_after_terminal_death():
+    """What a dead login looks like on disk: the tokens are stripped (``_quarantine_flat_oauth_state``)."""
+    return {
+        "provider": "nous",
+        "last_auth_error": {
+            "provider": "nous",
+            "message": "No access token found for Nous Portal login.",
+            "reason": "runtime",
+            "relogin_required": True,
+            "code": "auth_missing_access_token",
+            "at": datetime.now(UTC).isoformat(),
+        },
+    }
+
+
+class _PoolWithoutUsableEntry:
+    """A pool with rows but no usable one: the DEAD row shadows a freshly written login."""
+
+    def has_credentials(self):
+        return True
+
+    def select(self, **_kwargs):
+        return None
+
+    def try_refresh_current(self):
+        return None
+
+
+def _announce_outage(monkeypatch, server):
+    """Drive the announcing path once, so the latch sits where a real outage leaves it."""
+    _singleton_relogin_state(monkeypatch, outcomes=[True])
+    assert keepalive.refresh_nous_auth_keepalive_once() is False
+    return len(server.events)
+
+
+def test_latch_rearms_when_the_credential_is_live_again(monkeypatch):
+    """After a re-login the next terminal death must be heard, not swallowed by the old latch."""
+    import sys
+
+    server = _FakeGatewayServer(transports=[object()])
+    monkeypatch.setitem(sys.modules, "tui_gateway.server", server)
+    monkeypatch.setattr(keepalive, "_relogin_announced", False)
+
+    assert _announce_outage(monkeypatch, server) == 1, "one outage, one notice"
+
+    # The user signs in again: the auth state holds a fresh, unexpired token, while the pool still
+    # carries the row the outage left behind and cannot select it.
+    monkeypatch.setattr(keepalive, "get_provider_auth_state", lambda provider: _live_state())
+    monkeypatch.setattr(
+        "agent.credential_pool.load_pool", lambda provider: _PoolWithoutUsableEntry()
+    )
+
+    assert keepalive.refresh_nous_auth_keepalive_once() is False
+    assert keepalive._relogin_announced is False, (
+        "a live credential must retire the one-notice latch, or the next death is silent"
+    )
+
+    # A later terminal death reached the same way is announced again.
+    from hermes_cli.auth_constants import AuthError
+
+    keepalive._announce_relogin_required(
+        AuthError(
+            "refresh token rejected",
+            provider="nous",
+            code="auth_refresh_rejected",
+            relogin_required=True,
+        )
+    )
+    assert [(event, payload["provider"]) for event, payload in server.events] == [
+        (keepalive.NOUS_RELOGIN_EVENT, "nous"),
+        (keepalive.NOUS_RELOGIN_EVENT, "nous"),
+    ]
+
+
+def test_latch_survives_while_the_credential_is_still_dead(monkeypatch):
+    """A dead login must not clear the latch: one outage stays one notice, however long it lasts."""
+    import sys
+
+    server = _FakeGatewayServer(transports=[object()])
+    monkeypatch.setitem(sys.modules, "tui_gateway.server", server)
+    monkeypatch.setattr(keepalive, "_relogin_announced", False)
+
+    assert _announce_outage(monkeypatch, server) == 1
+
+    from hermes_cli.auth_constants import AuthError
+
+    still_dead = AuthError(
+        "No access token found for Nous Portal login.",
+        provider="nous",
+        code="auth_missing_access_token",
+        relogin_required=True,
+    )
+
+    # (a) the tokens were stripped by the terminal death, (b) they are there but already expired.
+    for state in (
+        _state_after_terminal_death(),
+        _live_state(expires_at=(datetime.now(UTC) - timedelta(minutes=5)).isoformat()),
+    ):
+        monkeypatch.setattr(keepalive, "get_provider_auth_state", lambda provider, s=state: s)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool", lambda provider: _PoolWithoutUsableEntry()
+        )
+        assert keepalive.refresh_nous_auth_keepalive_once() is False
+        assert keepalive._relogin_announced is True, (
+            f"a dead credential cleared the latch: {state!r}"
+        )
+
+        keepalive._announce_relogin_required(still_dead)
+
+    assert len(server.events) == 1, "one outage must stay one notice"

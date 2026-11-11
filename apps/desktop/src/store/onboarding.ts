@@ -25,6 +25,7 @@ import {
   $freeTierStatus,
   ackFreeTierNotice,
   freeTierReadyPending,
+  NOUS_PROVIDER_ID,
   refreshFreeTierStatus,
   setFreeTierRoute
 } from '@/store/free-tier'
@@ -33,6 +34,7 @@ import { $gatewayBootGeneration } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
+import { clearNousReloginNotice } from '@/store/nous-relogin-notice'
 import { afterOnboardingSurfaceClear, onboardingSurfaceOpen } from '@/store/onboarding-presence'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import { requestRoute } from '@/store/recovery-requests'
@@ -1068,6 +1070,12 @@ async function pollSession(provider: OAuthProvider, start: DeviceStart, ctx: Onb
 
       if (result.status === 'approved') {
         clearPoll()
+
+        if (provider.id === NOUS_PROVIDER_ID) {
+          // Only a Nous sign-in answers the disconnect notice the keepalive raised for Nous.
+          clearNousReloginNotice()
+        }
+
         setFlow({ status: 'success', provider })
         await completeWithModelConfirm(
           ctx,

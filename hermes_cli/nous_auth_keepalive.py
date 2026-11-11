@@ -186,6 +186,26 @@ def _refresh_selected_pool_entry(*, min_key_ttl_seconds: int, min_access_ttl_sec
     return True
 
 
+def _stored_login_is_live() -> bool:
+    """Whether the singleton Nous login could still produce a token right now.
+
+    The one-notice latch is cleared on a refresh, but the pool answers for its own rows only: the
+    row an outage left DEAD shadows a login the user has since repaired, so ``select`` returns None
+    and a falsy pool result would return before anything consulted the fresh credential. The latch
+    would then outlive the recovery and swallow the next terminal death.
+
+    "Live" is deliberately strict, because clearing the latch only costs a repeat toast: a stored
+    access token that has not reached its expiry. A terminal death strips the token keys
+    (``_quarantine_flat_oauth_state``) and a half-written state carries no ``expires_at``, which
+    ``_is_expiring`` reads as expiring -- so neither can re-arm the latch, and a login that is still
+    dead stays one notice however many ticks pass over it.
+    """
+    state = get_provider_auth_state("nous") or {}
+    if not state.get("access_token"):
+        return False
+    return not _is_expiring(state.get("expires_at"), 0)
+
+
 def refresh_nous_auth_keepalive_once(
     *, min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     min_access_ttl_seconds: Optional[int] = None, timeout_seconds: Optional[float] = None,
@@ -201,7 +221,7 @@ def refresh_nous_auth_keepalive_once(
             min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
         )
         if pool_result is not None:
-            if pool_result:
+            if pool_result or _stored_login_is_live():
                 _clear_relogin_announcement()
             return pool_result
         state = get_provider_auth_state("nous")

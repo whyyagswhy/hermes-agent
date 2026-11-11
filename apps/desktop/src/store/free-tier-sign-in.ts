@@ -13,6 +13,7 @@ import {
 } from '@/hermes'
 import { LONG_POLL_MIN_GAP_MS, pause, restOfLongPollGap } from '@/lib/long-poll'
 import { gatewayActivationEpoch } from '@/store/gateway'
+import { clearNousReloginNotice } from '@/store/nous-relogin-notice'
 import type { AppHandoffStatus, FreeTierStatus, OAuthPollResponse } from '@/types/hermes'
 
 import { type FreeTierRequester, NOUS_PROVIDER_ID, refreshFreeTierStatus } from './free-tier'
@@ -431,6 +432,8 @@ async function finishSignIn(result: OAuthPollResponse, requestGateway: FreeTierR
     return
   }
 
+  // The approval is the repair: the notice raised for the dead login has nothing left to say.
+  clearNousReloginNotice()
   set({ status: 'finishing' })
 
   // The tokens are on disk now, so the backend's view of this identity has

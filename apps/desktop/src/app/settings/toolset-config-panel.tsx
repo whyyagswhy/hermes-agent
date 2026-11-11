@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
+import { clearNousReloginNotice } from '@/store/nous-relogin-notice'
 import type {
   ActionStatusResponse,
   ToolEnvVar,
@@ -699,6 +700,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         const polled = await pollOAuthSession('nous', start.session_id, profile)
 
         if (polled.status === 'approved') {
+          // The login this panel just repaired is the one the disconnect notice warned about.
+          clearNousReloginNotice()
           notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
           await refresh()
           onConfiguredChange?.()

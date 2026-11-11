@@ -1,4 +1,5 @@
 import { notify } from '@/store/notifications'
+import { NOUS_RELOGIN_NOTICE_ID } from '@/store/nous-relogin-notice'
 import { requestRoute } from '@/store/recovery-requests'
 
 import type { GatewayEventContext } from './types'
@@ -18,7 +19,7 @@ export function handleAuthReloginEvent({ event, payload }: GatewayEventContext):
   }
 
   notify({
-    id: 'nous-auth-relogin-required',
+    id: NOUS_RELOGIN_NOTICE_ID,
     kind: 'error',
     title: 'Nous Portal disconnected',
     message: payload?.message || 'The saved Nous Portal login was rejected and must be signed in again.',
