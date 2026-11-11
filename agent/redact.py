@@ -22,6 +22,7 @@ from agent.redact_headers import (
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
+from agent.redact_mask import mask_secret
 
 logger = logging.getLogger(__name__)
 
@@ -911,22 +912,6 @@ def _mask_control_split_tokens(text: str, mask_fn) -> str:
     for start_orig, end_orig, replacement in reversed(matches):
         out[start_orig:end_orig] = list(replacement)
     return "".join(out)
-
-
-# mask_secret strips EVERY control char (incl. \n/\t, C1, DEL, zero-width) so a
-# masked secret never emits multiline or invisible bytes into display output.
-_DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\x80-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064]")
-
-
-def mask_secret(value: str, *, head: int = 4, tail: int = 4, floor: int = 12,
-                placeholder: str = "***", empty: str = "") -> str:
-    """Mask a secret for display (``hermes config`` / ``status`` / ``dump``):
-    ``sk-p...7890``; shorter than ``floor`` (after control-byte stripping) →
-    ``placeholder``; falsy → ``empty``."""
-    value = _DISPLAY_CONTROL_RE.sub("", value) if value else value
-    if not value:
-        return empty
-    return placeholder if len(value) < floor else f"{value[:head]}...{value[-tail:]}"
 
 
 # Approval-prompt display integrity: the copy a human approves must show everything that will run.
