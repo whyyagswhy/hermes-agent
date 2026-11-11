@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from hermes_time import now as _hermes_now
-from typing import Optional
+from typing import Callable, Optional
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -77,6 +77,7 @@ _PROMPT_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_PROMPT_FRAME)}(\d+)\n{re.escape(_PROMPT_HEADING)}")
 _RESPONSE_FRAME_RE = re.compile(
     rf"(?m)^{re.escape(_RESPONSE_FRAME)}(\d+)\n{re.escape(_RESPONSE_HEADING)}")
+_JOB_ID_RE = re.compile(r"(?m)^\*\*Job ID:\*\*\s*(\S+)\s*$")
 
 
 def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
@@ -110,14 +111,11 @@ def _archive_answer(archive: str) -> str | None:
     prompt_frame = _PROMPT_FRAME_RE.search(archive)
     if (prompt_frame is not None
             and archive.find(_PROMPT_HEADING) == prompt_frame.end() - len(_PROMPT_HEADING)):
-        response_start = prompt_frame.end() + int(prompt_frame.group(1)) + len(_PROMPT_SEPARATOR)
-        frame = _RESPONSE_FRAME_RE.match(archive, response_start)
-        tail = archive[frame.end():] if frame is not None else ""
+        parts = _split_framed(archive)
         # A missing or truncated writer-owned boundary is unusable.
-        if (frame is None or len(tail) != int(frame.group(1)) + len(_RESPONSE_TERMINATOR)
-                or not tail.endswith(_RESPONSE_TERMINATOR)):
+        if parts is None:
             return None
-        answer = tail[:-len(_RESPONSE_TERMINATOR)].strip()
+        answer = parts[2].strip()
     elif "## Response" not in archive:
         return archive.strip()
     else:
@@ -125,6 +123,86 @@ def _archive_answer(archive: str) -> str | None:
     if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer
+
+
+def _split_framed(archive: str) -> tuple[str, str, str] | None:
+    """Split a framed run document into ``(head, prompt, response)``, or ``None``.
+
+    The stamps must already match the text, which is the only state a writer produces:
+    it is what ``_archive_answer`` relies on, and the repair below re-derives the stamps
+    so that it stays true after masking. Under that precondition the writer's own
+    arithmetic is exact — jump exactly the stamped prompt length and match the response
+    frame at that offset — and it cannot land on a frame quoted inside the prompt or the
+    answer, because such a frame is reached by searching, never by that offset.
+
+    Reusing the reader's arithmetic instead of searching is the point: a search would have
+    to guess which of several frame-shaped runs the writer meant, and the stamps are stale
+    precisely in the case this repair exists for, so no candidate can be ranked against
+    them. ``None`` covers a document whose stamps do not match its text (a masking pass
+    that did not re-stamp, a truncated write, or script-mode output carrying no frame).
+    """
+    prompt_frame = _PROMPT_FRAME_RE.search(archive)
+    if (prompt_frame is None
+            or archive.find(_PROMPT_HEADING) != prompt_frame.end() - len(_PROMPT_HEADING)):
+        return None
+    response_start = prompt_frame.end() + int(prompt_frame.group(1)) + len(_PROMPT_SEPARATOR)
+    frame = _RESPONSE_FRAME_RE.match(archive, response_start)
+    if frame is None:
+        return None
+    tail = archive[frame.end():]
+    if (len(tail) != int(frame.group(1)) + len(_RESPONSE_TERMINATOR)
+            or not tail.endswith(_RESPONSE_TERMINATOR)):
+        return None
+    return (archive[:prompt_frame.start()],
+            archive[prompt_frame.end():response_start - len(_PROMPT_SEPARATOR)],
+            tail[:-len(_RESPONSE_TERMINATOR)])
+
+
+def restamp_after_redaction(archive: str, redact: Callable[[str], str]) -> str | None:
+    """Re-derive a framed run document's length stamps from what is actually stored (#153079).
+
+    The writer stamps the prompt and response lengths, and the gateway then stores
+    the document through ``gateway.session_results._redacted``. That masking changes the
+    length of the very text the stamps count: a secret-shaped token in the response is
+    masked for the first time there, and a script-mode prompt was already masked at
+    capture, whose ellipsis mask the second pass collapses. Either way the stamps no
+    longer match, ``_archive_answer`` finds no frame, and ``context_from`` silently
+    drops the run's answer.
+
+    Re-deriving both stamps from the halves after ``redact`` keeps the frame matching
+    what is saved. It changes only the stamps, never the masking rules and never which
+    text is masked — head, prompt and response are all still redacted here — so a secret
+    is masked exactly as before.
+
+    ``None`` when the document carries no usable frame (nothing is lost: the caller then
+    stores the plain redaction it would have stored anyway), or when re-splitting the
+    rebuilt document does not land on the same boundaries. A document whose stamps already
+    match comes back byte for byte, so an identity redaction is a no-op.
+    """
+    parts = _split_framed(archive)
+    if parts is None:
+        return None
+    head, prompt, response = parts
+    new_head, new_prompt, new_response = redact(head), redact(prompt), redact(response)
+    rebuilt = (
+        f"{new_head}{_PROMPT_FRAME}{len(new_prompt)}\n{_PROMPT_HEADING}{new_prompt}"
+        f"{_PROMPT_SEPARATOR}{_RESPONSE_FRAME}{len(new_response)}\n"
+        f"{_RESPONSE_HEADING}{new_response}{_RESPONSE_TERMINATOR}"
+    )
+    # The rebuilt document must split at the same boundaries it was built from, so the
+    # stamps the next read trusts always describe the text they sit next to.
+    if _split_framed(rebuilt) != (new_head, new_prompt, new_response):
+        return None
+    prompt_delta = len(new_prompt) - len(prompt)
+    response_delta = len(new_response) - len(response)
+    if prompt_delta or response_delta:
+        # Silent drift is what made this expensive to find: say which run moved and by how much.
+        job_id = _JOB_ID_RE.search(head)
+        logger.info(
+            "cron archive restamped after redaction: job_id=%s prompt_delta=%+d response_delta=%+d",
+            job_id.group(1) if job_id else "?", prompt_delta, response_delta,
+        )
+    return rebuilt
 
 
 def _clip_to_context_budget(text: str) -> str:

@@ -38,6 +38,17 @@ def _redacted(value):
     prints the completion event, never this copy."""
     if isinstance(value, str):
         from agent.redact import redact_sensitive_text
+        # A stored cron run document is framed by writer-owned length stamps that the
+        # reader uses to find its answer; masking changes the length of the text those
+        # stamps count, so re-derive them from the stored halves and the frame matches
+        # again (#153079).
+        # The writer-owned marker keeps every other stored string off this path; the
+        # constant is imported (lazily, so no cycle at module load) rather than copied.
+        from cron.scheduler_prompt import _RESPONSE_FRAME, restamp_after_redaction
+        if _RESPONSE_FRAME in value:
+            restamped = restamp_after_redaction(value, redact_sensitive_text)
+            if restamped is not None:
+                return restamped
         return redact_sensitive_text(value)
     if isinstance(value, dict):
         return {k: _redacted(v) for k, v in value.items()}
