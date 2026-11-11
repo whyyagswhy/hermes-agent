@@ -135,6 +135,63 @@ class TestSetupLogging:
         default_log = hermes_home / "logs" / "agent.log"
         assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text(encoding="utf-8-sig")
 
+    def test_routing_swap_failure_keeps_static_handlers(self, hermes_home, tmp_path, monkeypatch):
+        """A router-construction failure mid-swap must not strand the process
+        with closed handlers and no listener (#141958)."""
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        originals = list(hermes_logging._queued_file_handlers)
+        assert len(originals) > 0
+
+        real_router = hermes_logging._ProfileRoutingFileHandler
+
+        class _BoomRouter(real_router):  # type: ignore[misc]
+            def __init__(self, existing, homes):
+                raise RuntimeError("router construction failed")
+
+        monkeypatch.setattr(hermes_logging, "_ProfileRoutingFileHandler", _BoomRouter)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is False
+        assert hermes_logging._queued_file_handlers == originals
+
+        logger = logging.getLogger("routing-swap-failure-test")
+        logger.warning("post-failure record still lands")
+        hermes_logging.flush_log_queue()
+        assert "post-failure record still lands" in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text(encoding="utf-8-sig")
+
+    def test_routing_listener_restart_failure_restores_handlers(
+        self, hermes_home, tmp_path, monkeypatch
+    ):
+        """A listener-restart failure after the swap must restore the static
+        handlers instead of leaving routers with nobody draining (#141958)."""
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        originals = list(hermes_logging._queued_file_handlers)
+        assert len(originals) > 0
+
+        real_start = hermes_logging._start_queue_listener_locked
+        attempts: list[int] = []
+
+        def _boom_once():
+            if not attempts:
+                attempts.append(1)
+                raise RuntimeError("listener restart failed")
+            return real_start()
+
+        monkeypatch.setattr(hermes_logging, "_start_queue_listener_locked", _boom_once)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is False
+        assert hermes_logging._queued_file_handlers == originals
+
+        logger = logging.getLogger("routing-restart-failure-test")
+        logger.warning("post-restore record still lands")
+        hermes_logging.flush_log_queue()
+        assert "post-restore record still lands" in (
+            hermes_home / "logs" / "agent.log"
+        ).read_text(encoding="utf-8-sig")
+
     @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
         (False, None, True),      # the launch profile opted out, the routed one did not
         (True, "env", False),     # the routed profile opted out in its own .env
