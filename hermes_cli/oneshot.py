@@ -82,6 +82,9 @@ def _auxiliary_report(report: dict, by_task: dict[str, dict]) -> None:
 # Exit code for a turn stopped by an interrupt (SIGINT convention, same as ``chat -Q``).
 _INTERRUPTED_EXIT_CODE = 130
 
+# ``turn_exit_reason`` value set when a ``pre_llm_call`` hook returns ``{"action": "block"}``.
+_PRE_LLM_BLOCK_EXIT_REASON = "blocked_by_plugin_pre_llm_call"
+
 
 def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
     """Map a finished ``-z`` turn onto its exit code: ``0`` only when the turn completed;
@@ -95,6 +98,10 @@ def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
     if result.get("interrupted"):
         return _INTERRUPTED_EXIT_CODE
     if result.get("failed") or result.get("partial") or result.get("completed") is False:
+        return 2
+    # A vetoed turn (pre_llm_call block) produced a block message, not a real answer;
+    # the model never ran, so this is not a successful completion (#154234).
+    if result.get("turn_exit_reason") == _PRE_LLM_BLOCK_EXIT_REASON:
         return 2
     if not (response or "").strip():
         return 1
