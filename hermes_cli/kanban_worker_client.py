@@ -144,10 +144,20 @@ async def _await_receipt(client, params, board_db, claim):
     return receipt
 
 
+# Host-side board-busy race exit code (EX_UNAVAILABLE=69); mirrors
+# _KANBAN_UNKNOWN_ADMISSION_EXIT in kanban_db_dispatch.py (#154265).
+_UNKNOWN_ADMISSION_EXIT = 69
+
+
 def _exit_code(receipt, params, board_db):
-    from hermes_cli.gateway_client import GatewayClientError
     if receipt['status'] == 'unknown':
-        raise GatewayClientError('Kanban execution unknown; retained by owner')
+        # The owner wrote owner_admitted after our submitter-liveness watcher
+        # ended the turn — a host-side race; nothing the card did failed.
+        # Exit 69 tells the dispatcher to requeue without spending the budget.
+        import sys as _sys
+        print("Kanban owner admission unknown (board-busy race); requeuing",
+              file=_sys.stderr)
+        return _UNKNOWN_ADMISSION_EXIT
     from gateway.session_kanban import worker_result
     result = worker_result(board_db, params)
     # The attempt's reply ends the log, as a one-shot worker's did: crash diagnostics quote it.

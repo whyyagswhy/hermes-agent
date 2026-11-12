@@ -243,6 +243,11 @@ def _classify_worker_exit(pid: int) -> tuple[str, Optional[int]]:
     return ("unknown", None)
 
 
+# Worker exit code for a host-side owner-admission race (EX_UNAVAILABLE=69, #154265);
+# mirrors _UNKNOWN_ADMISSION_EXIT in kanban_worker_client.py.
+_KANBAN_UNKNOWN_ADMISSION_EXIT = 69
+
+
 def _exit_code_kind(code: int) -> tuple[str, int]:
     """``(kind, code)`` for a worker's exit code, however it was observed."""
     if code == 0:
@@ -251,6 +256,8 @@ def _exit_code_kind(code: int) -> tuple[str, int]:
         return ("rate_limited", code)
     if code == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE:
         return ("terminal_provider", code)
+    if code == _KANBAN_UNKNOWN_ADMISSION_EXIT:
+        return ("unknown_admission", code)
     return ("nonzero_exit", code)
 
 
@@ -1101,39 +1108,31 @@ def _classify_dead_worker_exit(
         if logged is not None:
             kind, code = _exit_code_kind(logged)
     if kind == "clean_exit":
-        # rc=0 while still ``running``: usually the work succeeded and only the
-        # paperwork was skipped; the corrective sentence reaches the retry
-        # worker via ``build_worker_context``.
-        return _DeadWorker(
-            kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
-            # ``protocol_violation`` is the durable marker for
-            # _protocol_violation_streak: _end_run copies this payload into the
-            # run metadata.
+        # rc=0 while still ``running``: the corrective sentence reaches the retry
+        # worker via ``build_worker_context``; ``protocol_violation`` is the
+        # durable marker for _protocol_violation_streak.
+        return _DeadWorker(kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
             {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
-            protocol_violation=True,
-        )
+            protocol_violation=True)
     if kind == "rate_limited":
-        # Quota wall — NOT a task failure. Release to the source phase and do
-        # NOT count a failure so a long quota window can't trip the breaker.
-        return _DeadWorker(
-            kind, code,
+        # Quota wall — not a task failure; requeue without counting a failure.
+        return _DeadWorker(kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
-            "rate_limited",
-            {"pid": pid, "claimer": claimer, "exit_code": code},
-            rate_limited=True,
-        )
+            "rate_limited", {"pid": pid, "claimer": claimer, "exit_code": code},
+            rate_limited=True)
     if kind == "terminal_provider":
-        # The worker classified its own provider failure as unhealable (credential
-        # revoked, model gone): every further spawn would hit the same wall, so
-        # ``_account_crashes`` trips the breaker now instead of after ``failure_limit``.
-        return _DeadWorker(
-            kind, code,
-            f"pid {pid} exited on a terminal provider error (exit {code}): the provider rejected "
-            "this profile's credential or model — fix the configuration, then unblock.",
-            "crashed",
-            {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
-            terminal_provider=True,
-        )
+        # Credential/model gone — trips the breaker immediately; fix config then unblock.
+        return _DeadWorker(kind, code,
+            f"pid {pid} exited on a terminal provider error (exit {code}): credential or model "
+            "rejected — fix configuration, then unblock.",
+            "crashed", {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code,
+                       "terminal_provider": True}, terminal_provider=True)
+    if kind == "unknown_admission":
+        # Board-busy host-side race — requeue without spending the failure budget.
+        return _DeadWorker(kind, code,
+            f"pid {pid} owner-admission unknown (board-busy race; requeued without failure)",
+            "unknown_admission", {"pid": pid, "claimer": claimer, "exit_code": code},
+            rate_limited=True)
     if kind == "nonzero_exit":
         error_text = f"pid {pid} exited with code {code}"
     elif kind == "signaled":
