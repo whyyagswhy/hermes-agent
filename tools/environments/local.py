@@ -540,6 +540,16 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]
+    # Mnemosyne embedding-backend config is read at module-level import by mnemosyne BEFORE
+    # load_hermes_dotenv() runs in the child, so these vars must arrive in the Popen env or
+    # the child freezes at built-in defaults (384-dim bge-small, no API backend). They are
+    # deployment-level (one shared embedding backend serves every profile on the host), not
+    # per-profile secrets — the same rationale as API_SERVER_HOST/PORT. A target-profile
+    # .env that declares the same name will overwrite at child startup. (#151247)
+    _MNEMOSYNE_EMBED_PREFIXES = ("MNEMOSYNE_EMBEDDING_", "MNEMOSYNE_EMBEDDINGS_")
+    for _mk, _mv in list(os.environ.items()):
+        if _mk.upper().startswith(_MNEMOSYNE_EMBED_PREFIXES):
+            env.setdefault(_mk, _mv)
     # Authorization gates are the one residue a name list cannot see: a unit-file ``Environment=``
     # or an operator export never appears in the launch ``.env``, the secret scrub ignores
     # non-credentials, and the target's own ``.env`` rarely defines the key to overwrite it (#113270).
