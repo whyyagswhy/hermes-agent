@@ -66,9 +66,13 @@ def resolve_local_target(authority, actor, sid):
             # A copied chat_id is not evidence that this row belongs to the owner's lineage.
             if local_lineage_owner(conn, sid) != row['chat_id']:
                 raise RuntimeStoreError('storage_unavailable')
-    if bound or str(row.get('chat_id') or '').startswith('local-'):
-        ref = SessionRef(authority.profile_id, row['chat_id'])
+    chat_id = str(row.get('chat_id') or '')
+    continuation = chat_id.startswith('local-') and sid != chat_id
+    if bound or chat_id.startswith('local-'):
+        ref = SessionRef(authority.profile_id, sid if continuation else chat_id)
         authority.authorize(actor, ref, 'session:read')
+        if continuation:
+            return ref          # restore_local_session raises ValueError on sid != chat_id
         from gateway.session_local_recovery import restore_local_session
         return restore_local_session(authority, ref.session_id) if bound else ref
     return adopt_legacy_session(authority, actor, row)
