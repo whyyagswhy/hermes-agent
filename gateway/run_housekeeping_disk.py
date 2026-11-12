@@ -141,3 +141,26 @@ async def _post(runner, profile, home, advice) -> bool:
             await present_notification(_send, platform=platform)
             delivered = delivered or any(sent)
     return delivered
+
+
+def _housekeeping_reclaim_orphaned_leases(runner) -> None:
+    """Drop active-session registry entries this process wrote but no live session still owns.
+
+    _prune_dead only reclaims entries of dead *processes*.  When the gateway re-creates its
+    runtime (a plugin update, a hot-reload) while the process stays alive, the replaced runtime's
+    claim keeps its pid alive and _prune_dead never reclaims it.  Every new turn for that
+    session then returns SESSION_NOT_OWNED until the gateway is restarted (#154162).
+
+    tui_gateway's idle reaper already does this sweep every 300 s; mirror that here.
+    """
+    try:
+        from hermes_cli.active_sessions import release_orphaned_leases
+        live_ids: set[str] = {
+            str(state.turn.lease.lease_id)
+            for state in runner._sessions_map().values()
+            if state.turn.lease is not None
+        }
+        if dropped := release_orphaned_leases(live_ids):
+            logger.info('Reclaimed %d orphaned active-session lease(s)', dropped)
+    except Exception:
+        logger.debug('orphaned-lease reclaim failed', exc_info=True)
