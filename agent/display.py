@@ -3,6 +3,7 @@
 Pure display functions with no AIAgent dependency; used for CLI feedback.
 """
 
+import functools
 import logging
 import os
 import re
@@ -236,6 +237,7 @@ def _split_shell_words(segment: str) -> list[str]:
     return ["".join(p) for p in parts if p]
 
 
+@functools.lru_cache(maxsize=4096)
 def _strip_shell_pipe_tail(segment: str) -> str:
     """Drop a trailing ``| head/tail/wc/sort/uniq ...`` pipeline stage."""
     words = _split_shell_words(segment)
@@ -246,6 +248,7 @@ def _strip_shell_pipe_tail(segment: str) -> str:
     return " ".join(words).strip()
 
 
+@functools.lru_cache(maxsize=4096)
 def _split_shell_compound(command: str) -> list[str]:
     """Split on unquoted ``&&`` / ``||`` / ``;`` / newline, dropping pipe tails per segment."""
     raw: list[list[str]] = [[]]
@@ -264,6 +267,7 @@ def _split_shell_compound(command: str) -> list[str]:
     return [s for s in segments if s]
 
 
+@functools.lru_cache(maxsize=4096)
 def _shell_head_word(segment: str) -> str:
     """Command name of a segment, skipping leading ``VAR=value`` assignments."""
     words = _split_shell_words(segment)
@@ -272,6 +276,7 @@ def _shell_head_word(segment: str) -> str:
     return _shell_basename(words[0] if words else "")
 
 
+@functools.lru_cache(maxsize=4096)
 def _clean_shell_segment(segment: str) -> str:
     """Drop redirections (``> file``, ``2>&1``) from a segment."""
     words = _split_shell_words(segment)
@@ -289,6 +294,7 @@ def _clean_shell_segment(segment: str) -> str:
     return " ".join(out).strip()
 
 
+@functools.lru_cache(maxsize=4096)
 def _is_shell_boundary_echo(segment: str) -> bool:
     words = _split_shell_words(segment)
     if _shell_basename(words[0] if words else "") != "echo":
