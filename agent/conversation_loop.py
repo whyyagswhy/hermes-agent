@@ -1743,6 +1743,10 @@ def _run_conversation_turn(
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    # Stamp the current-turn user-row index so the compressor can protect it even
+    # when it carries a display_kind (cron delivery, bot-chat wake) that
+    # _is_actionable_user_turn would otherwise skip (#154252).
+    agent._active_turn_user_idx = s.current_turn_user_idx
     if (early_result := _turn_without_loop(agent, s, _ctx.plugin_block_message)) is not None:
         return early_result
 

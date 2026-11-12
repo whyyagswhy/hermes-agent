@@ -4580,12 +4580,12 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _find_last_user_message_idx(self, messages: list[dict[str, Any]], head_end: int) -> int:
         """Return the latest actionable user turn at or after *head_end*, or -1."""
-        # Early-exit generator: callers want the newest hit only, and collecting every index
-        # (``_real_user_indices_desc``) costs a full backward scan per call.
-        return next(
+        last = next(
             (i for i in range(len(messages) - 1, head_end - 1, -1) if self._is_real_user_turn(messages[i])),
             -1,
         )
+        active = getattr(self, "_active_turn_user_idx", -1)  # #154252: anchor display_kind turn trigger
+        return active if isinstance(active, int) and head_end <= active > last else last
 
     def _find_last_assistant_message_idx(self, messages: list[dict[str, Any]], head_end: int) -> int:
         """Last text-bearing non-summary assistant reply at/after *head_end* (else last non-summary assistant), or -1."""
