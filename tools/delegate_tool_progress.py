@@ -225,6 +225,10 @@ def child_task_message(goal: str, context: Optional[str]) -> str:
     "shared" test cannot see. Scaffolds in use are refreshed on every request, so a wide fan-out
     evicts only idle ones (one re-write when that session resumes).
     """
+    # Strip the goal so the KV-cache normalization pass in turn_request_assembly
+    # is idempotent and goal whitespace is handled consistently whether context is
+    # supplied or not (#154492).
+    goal = goal.strip()
     if not (context and context.strip()):
         return goal
     from agent.prompt_cache_boundary import register_stable_prefix
