@@ -919,9 +919,30 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
             # would 409 every Desktop boot), so the idempotent stamp runs on its own connection.
             stamped = await asyncio.to_thread(owner_db.backfill_null_session_profiles, stamp)
         else:
-            stamped = await asyncio.to_thread(
-                _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
-                read_only=False)
+            # Split topology: no in-process gateway runner.  Discover whether a live
+            # standalone gateway owns this profile's store.  If it does, the backfill
+            # is already its responsibility — it stamps ``row_profile`` on every
+            # outgoing ``get_sessions`` row, so the idempotent NULL-fill is a no-op
+            # and running it here would race the owner's exclusive lock (#148531).
+            from hermes_cli.gateway_runtime import discover_gateway_endpoint
+            from hermes_state import _default_db_path
+            _home = (
+                Path(_cron_profile_home(body.profile)[1])
+                if body.profile
+                else Path(_default_db_path()).parent
+            )
+            _discovery = await asyncio.to_thread(
+                discover_gateway_endpoint, _home, timeout=1.5)
+            if _discovery.endpoint is not None:
+                _log.debug(
+                    "owner-backfill: live gateway owns %s; delegating stamp, skipping offline write",
+                    _home,
+                )
+                stamped = 0
+            else:
+                stamped = await asyncio.to_thread(
+                    _with_db, body.profile, lambda db: db.backfill_null_session_profiles(stamp),
+                    read_only=False)
 
     if stamped:
         _log.info(
