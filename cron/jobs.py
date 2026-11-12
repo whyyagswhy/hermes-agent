@@ -2742,6 +2742,11 @@ def claim_job_for_fire(
             return False
         now = _hermes_now()
         if _claim_is_live(job.get("fire_claim"), now, claim_ttl_seconds):
+            # The live claim owns the pending occurrence. Consuming pending_slot here
+            # prevents _restore_unclaimed_slot from looping the slot back as due on
+            # every tick while the claim is active (#154557 Defect 2).
+            if job.pop("pending_slot", None) is not None:
+                save_jobs(jobs)
             return False  # someone holds a fresh claim
         from cron.occurrences import completed_occurrence, scheduled_instant
 

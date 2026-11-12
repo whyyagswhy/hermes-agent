@@ -523,9 +523,11 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 
 from cron.jobs import (
-    _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    _claim_is_live, _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire,
+    fire_claim_fence, clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim,
+    mark_job_run, save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope,
+    use_cron_store)
+from cron.constants import FIRE_CLAIM_TTL_SECONDS
 from cron import store_health
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
@@ -4229,8 +4231,18 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
             job["execution_id"], job["id"], f"Fire claim failed: {type(exc).__name__}: {exc}")
         raise
     if not claimed:
-        finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+        # Distinguish benign at-most-once contention from a genuine dispatch failure.
+        # The in-memory job dict carries the fire_claim visible at get_due_jobs time;
+        # for the common case (manual fire holds the claim when the cron slot fires)
+        # the claim is here and we book a cancelled receipt instead of failed (#154557 D1).
+        if _claim_is_live(job.get("fire_claim"), _hermes_now(), FIRE_CLAIM_TTL_SECONDS):
+            finish_execution(
+                job["execution_id"], success=False, cancelled=True,
+                error="Skipped: job already running (live fire claim; at-most-once guard).")
+        else:
+            finish_execution(
+                job["execution_id"], success=False,
+                error="Fire claim lost; execution was not started.")
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
