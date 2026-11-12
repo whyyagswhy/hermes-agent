@@ -236,6 +236,13 @@ def _same_registered_provider(provider: str, configured_provider: str) -> bool:
     """Profile aliases share an auth registry ID; unrelated routes must stay distinct."""
     if provider == configured_provider:
         return True
+    # Resolve aliases to canonical ids before the registry lookup so that
+    # e.g. "lm-studio" and "lmstudio" map to the same profile (#154243).
+    from hermes_cli.providers import ALIASES as _ALIASES
+    provider = _ALIASES.get(provider, provider)
+    configured_provider = _ALIASES.get(configured_provider, configured_provider)
+    if provider == configured_provider:
+        return True
     pconfig = PROVIDER_REGISTRY.get(provider)
     configured = PROVIDER_REGISTRY.get(configured_provider)
     return bool(pconfig and configured and pconfig.id == configured.id)
