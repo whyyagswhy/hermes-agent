@@ -5,6 +5,7 @@ import asyncio
 from contextlib import suppress
 import logging
 import os
+import json
 import uuid
 
 import acp
@@ -732,7 +733,10 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
             # Our own lost turn: the same refusal whether session.info or this completion woke us.
             raise GatewayClientError(self._unknown_recovery(session_id, admission_id))
         if outcome == "failed":
-            raise GatewayClientError("admitted_turn_failed")
+            _fail_data: dict = {"details": "admitted_turn_failed"}
+            if terminal.get("failure_reason"):
+                _fail_data["fail_kind"] = terminal["failure_reason"]
+            raise GatewayClientError(json.dumps(_fail_data))
         from acp_adapter.gateway_session_meta import turn_usage
         # The turn's last ``session.usage`` precedes its ``message.complete`` on the stream.
         return PromptResponse(stop_reason="cancelled" if outcome == "cancelled" else "end_turn",
