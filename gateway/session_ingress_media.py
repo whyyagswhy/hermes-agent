@@ -214,6 +214,30 @@ def reconcile_native_retry(db, *, principal_id, session_id, request_id, payload,
         row = conn.execute('SELECT status, payload_json FROM session_admissions WHERE principal_id=? AND '
                            'target_session_id=? AND request_id=?', (principal_id, session_id, request_id)).fetchone()
     retained = json.loads(row[1]) if row is not None else {}
+    # Normalize arrival-only fields from the committed row before fingerprint/media comparison.
+    # A native Slack replay may carry a fresh receive timestamp, refreshed channel_context, or
+    # a display-name change; none represent changed content. Only reuse fields present in the
+    # committed row; all content, sender-identity, route and policy fields remain exact.
+    if retained and 'native_text_v1' in retained and 'native_text_v1' in payload:
+        retained_ntv1 = retained['native_text_v1']
+        new_ntv1 = dict(payload['native_text_v1'])
+        if 'timestamp' in retained_ntv1:
+            new_ntv1['timestamp'] = retained_ntv1['timestamp']
+        retained_ev = retained_ntv1.get('event', {})
+        if 'channel_context' in retained_ev:
+            new_ntv1['event'] = {**new_ntv1.get('event', {}),
+                                 'channel_context': retained_ev['channel_context']}
+        retained_src = retained_ntv1.get('source', {})
+        new_src = new_ntv1.get('source', {})
+        if (retained_src.get('user_id') and
+                retained_src.get('user_id') == new_src.get('user_id') and
+                'user_name' in retained_src):
+            new_ntv1['source'] = {**new_src, 'user_name': retained_src['user_name']}
+            # event.user_name mirrors source.user_name via _EVENT_FIELDS; normalize it too.
+            if 'user_name' in retained_ev:
+                new_ntv1['event'] = {**new_ntv1.get('event', {}),
+                                     'user_name': retained_ev['user_name']}
+        payload = {**payload, 'native_text_v1': new_ntv1}
     recorded = retained.get('native_text_v1', {}).get('ingress_sha256')
     if recorded is not None and recorded == ingress_fingerprint(payload, raw):
         resolved = retained
