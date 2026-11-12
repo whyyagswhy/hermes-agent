@@ -114,3 +114,44 @@ def test_update_inventory_records_the_launch_supervisor(monkeypatch, tmp_path, r
     plan = update_inventory.UpdatePlan()
     update_inventory._collect_gateway_runtimes(plan, [("default", tmp_path)], set())
     assert [runtime.supervisor for runtime in plan.runtimes] == [expected]
+
+
+def test_drained_gateway_with_no_replacement_reports_dead_host(monkeypatch, capsys):
+    """RED on main: drain succeeds but supervisor never relaunches — host is left without a gateway.
+
+    Main conflates the drained-and-no-replacement path with the drain-timeout path and prints
+    the drain-timeout refusal ("Not stopping or foreground-running"), which claims the gateway
+    is still running.  After the fix the message names the dead host and the recovery commands.
+    """
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_supervised_restart as supervised
+
+    monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 15.0)
+    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", lambda pid, budget: True)
+    monkeypatch.setattr(supervised, "_wait_for_supervised_gateway_replacement", lambda pid, **k: None)
+
+    with pytest.raises(SystemExit) as exc:
+        supervised.restart_externally_supervised_gateway(12345)
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert "has no gateway running now" in out, f"Expected dead-host message, got: {out!r}"
+    assert "Not stopping" not in out, f"Drain-timeout refusal must not appear here: {out!r}"
+    assert "hermes gateway ensure" in out
+
+
+def test_drain_timeout_reports_still_running(monkeypatch, capsys):
+    """Drain timeout: gateway still up — keep the existing refusal, do not say it is dead."""
+    from hermes_cli import gateway as gw
+    from hermes_cli import gateway_supervised_restart as supervised
+
+    monkeypatch.setattr(gw, "_get_restart_exit_wait_budget", lambda: 15.0)
+    monkeypatch.setattr(gw, "_graceful_restart_via_sigusr1", lambda pid, budget: False)
+
+    with pytest.raises(SystemExit) as exc:
+        supervised.restart_externally_supervised_gateway(12345)
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert "Not stopping" in out, f"Expected drain-timeout refusal, got: {out!r}"
+    assert "has no gateway running now" not in out, f"Dead-host message must not appear here: {out!r}"

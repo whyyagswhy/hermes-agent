@@ -90,15 +90,24 @@ def restart_externally_supervised_gateway(supervised_pid: int) -> None:
             print()
             print(f"✓ Gateway relaunched by its supervisor (PID {replacement_pid})")
             return
-        print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
+        # Drain succeeded; no replacement registered — host is left without a gateway.
+        # Do not emit the drain-timeout refusal: the old gateway is already gone.
+        _print_lines(
+            "",
+            f"✗ Gateway (PID {supervised_pid}) exited and nothing brought it back:",
+            "  this host has no gateway running now.",
+            "  Start the supervisor, or bring a gateway up by hand:",
+            "    hermes gateway ensure    # detached runtime, no installed service needed",
+            "    hermes gateway run       # foreground, ends with this shell",
+        )
     else:
         print(f"⚠ Gateway did not exit within {wait_budget:.0f}s of SIGUSR1 (or the signal could not be sent)")
-    _print_lines(
-        "",
-        "✗ Not stopping or foreground-running a supervisor-owned gateway.",
-        "  Check the supervisor (it may be unloaded, wedged, or stopped retrying),",
-        "  then rerun once it is healthy: hermes gateway restart",
-    )
+        _print_lines(
+            "",
+            "✗ Not stopping or foreground-running a supervisor-owned gateway.",
+            "  Check the supervisor (it may be unloaded, wedged, or stopped retrying),",
+            "  then rerun once it is healthy: hermes gateway restart",
+        )
     sys.exit(1)
 
 
