@@ -668,6 +668,9 @@ _REASONING_ECHO_RULES: tuple = (
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
     # Portal stealth model that 400s on a tool-call turn without reasoning_content (f86276d2ebc).
     ("missingno", frozenset(), frozenset(), ("stealth/missingno",), ()),
+    # Reflection AI (Beam family) requires reasoning_content on every earlier assistant message
+    # and rejects the local `reasoning` carrier (#154304).
+    ("reflection", frozenset(), frozenset(), ("beam",), ("api.reflection.ai",)),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 
@@ -689,6 +692,10 @@ _REASONING_CARRIER_ROUTES: tuple = (
     # Vendors that document reasoning_details replay next to reasoning_content.
     (frozenset({RC, RD}), frozenset({"novita", "tencent-tokenhub", "minimax", "minimax-cn"}),
      ("novita.ai", "tokenhub.tencentmaas.com", "tokenhub-intl.tencentcloudmaas.com", "minimax.io", "minimaxi.com")),
+    # Reflection AI (Beam) only reads reasoning_content; the local `reasoning` carrier is
+    # rejected with 400 "Unrecognized request argument" (#154304). Host match only —
+    # provider set is empty so non-reflection.ai custom endpoints are unaffected.
+    (frozenset({RC}), frozenset(), ("reflection.ai",)),
     (_LOCAL_CARRIERS, frozenset({"ollama-cloud", "custom", "lmstudio", "upstage"}), ("ollama.com", "upstage.ai")),
 )
 
