@@ -18,6 +18,26 @@ except ModuleNotFoundError as exc:
     if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
+# Python version gate: Hermes requires 3.14+. All runtime packages carry a
+# ``; python_version >= "3.14"`` marker so pip correctly skips them on older Pythons
+# that only need to run ``hermes update`` to reach a supported version. Any other
+# subcommand on old Python fails deep in the turn loop with ModuleNotFoundError; exit
+# here with a clear message instead. ``update`` is exempt so self-upgrade works.
+# Guard is stdlib-only so it runs before any gated import.
+import sys as _sys
+if _sys.version_info < (3, 14):
+    _argv = _sys.argv[1:5]
+    _update_cmds = {"update", "--update", "self-update"}
+    if not any(a in _update_cmds for a in _argv):
+        _sys.exit(
+            "Hermes requires Python 3.14 or later; "
+            "you are running Python " + _sys.version.split()[0] + ".\n"
+            "If you have an existing Hermes install, run `hermes update` to upgrade.\n"
+            "For a fresh install, see: https://github.com/NousResearch/hermes-agent"
+        )
+    del _argv, _update_cmds
+del _sys
+
 # A `hermes update` killed while git was writing the new tree leaves a mix of old and new files that
 # fails at the next import, whichever it is — put the old tree back before importing anything else
 # from the checkout, then rerun the command (this module may itself be one of the new files).
