@@ -59,7 +59,7 @@ TERMINAL_WORKER_REAP_GRACE_SECONDS = 120
 # (#117009).
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit|429|403|"
-    r"auth|authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
+    r"authenticat(?:e|es|ed|ing|ion)|authoriz(?:e|es|ed|ing|ation)|"
     r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
@@ -1590,7 +1590,7 @@ def check_respawn_guard(
     #    reaches the breaker.
     rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
     latest_run = conn.execute(
-        "SELECT outcome, ended_at, metadata FROM task_runs "
+        "SELECT outcome, ended_at, metadata, error FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
         "ORDER BY ended_at DESC LIMIT 1",
         (task_id,),
@@ -1617,15 +1617,24 @@ def check_respawn_guard(
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain
     # benign commands such as ``claude auth status`` (#117097).
-    err = _kb._lossy_text(row["last_failure_error"])
-    latest_outcome = latest_run["outcome"] if latest_run is not None else None
-    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+    # 2b. Use the latest run's error field — not the stale task-level
+    # last_failure_error — so a later successful run clears the guard
+    # (#154423-B). Fall back to task-level field only when no run exists
+    # (keeps the BLOB-safety contract from #116473 intact).
+    if latest_run is not None:
+        err = _kb._lossy_text(latest_run["error"] or "")
+        latest_outcome = latest_run["outcome"]
+    else:
+        err = _kb._lossy_text(row["last_failure_error"])
+        latest_outcome = None
 
-    # Review-lane spawns stop here: a recent completed run and a fresh PR URL
-    # are the canonical *inputs* to a review handoff, not duplicate-work signals.
+    # Review-lane exemption moved above blocker_auth (#154423-C):
+    # review cards are inputs to a handoff, not retry candidates.
     if lane == "review":
         return None
+
+    if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
+        return "blocker_auth"
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
