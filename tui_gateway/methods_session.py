@@ -625,7 +625,7 @@ class _Resume:
 
     def mint(self, prompts: bool = True) -> tuple:
         """``(runtime sid, source, cwd)`` for the live record this resume registers (+ gateway prompts on)."""
-        ids = _new_runtime_ids(self.params)
+        ids = _new_runtime_ids({"source": _str_param(self.params, "source") or (self.found or {}).get("source")})  # carry stored source; env on remote gives 'tui' (#154216 bug 2)
         if prompts:
             _enable_gateway_prompts()
         return *ids, self.profile_resume_cwd or _default_session_cwd()
@@ -778,7 +778,7 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         ctx.db.create_session(
             ctx.target,
             source=_resolve_session_source(_str_param(ctx.params, "source") or None),
-            model=_resolve_model(),
+            model=_resolve_model(), user_id=_transport_auth_user_id(current_transport()),  # #154216 bug 3
             profile_name=profile_name_for_home(ctx.profile_home) or _response_profile_name(ctx.profile),
         )
         ctx.found = ctx.db.get_session(ctx.target)
