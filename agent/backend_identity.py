@@ -74,6 +74,36 @@ def _both_first_class(a: BackendIdentity, b: BackendIdentity) -> bool:
         return False
 
 
+
+_CREDENTIAL_FIELDS = ("api_key", "key_cmd", "key_env")
+
+
+def _both_named_providers_distinct_credentials(a: BackendIdentity, b: BackendIdentity) -> bool:
+    """True when both provider labels are named providers: entries with distinct credential sources.
+
+    Named custom providers share a URL but own separate rate-limit quotas; a 429 on one key
+    says nothing about another key on the same host.  Shim aliases share one credential
+    (same or absent fields) so this returns False for them, preserving #22548 same-deployment
+    dedup.  Best-effort: exceptions return False, keeping the old conservative behaviour.
+    """
+    if not a.provider or not b.provider or a.provider == b.provider:
+        return False
+    try:
+        from hermes_cli.config import load_config_readonly
+        providers = (load_config_readonly() or {}).get("providers") or {}
+        entry_a = providers.get(a.provider)
+        entry_b = providers.get(b.provider)
+        if not (isinstance(entry_a, dict) and isinstance(entry_b, dict)):
+            return False
+        cred_a = tuple((entry_a.get(f) or "").strip() for f in _CREDENTIAL_FIELDS)
+        cred_b = tuple((entry_b.get(f) or "").strip() for f in _CREDENTIAL_FIELDS)
+        if not any(cred_a) or not any(cred_b):
+            return False
+        return cred_a != cred_b
+    except Exception:
+        return False
+
+
 def same_credential_surface(a: BackendIdentity, b: BackendIdentity) -> bool:
     """Do two identities share the credential a 401/402 just invalidated?
 
@@ -112,6 +142,7 @@ def same_deployment(a: BackendIdentity, b: BackendIdentity) -> bool:
             and a.model
             and a.model == b.model
             and not _both_first_class(a, b)
+            and not _both_named_providers_distinct_credentials(a, b)
         )
     if not (a.model and b.model and a.model == b.model):
         return False
