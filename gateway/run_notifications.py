@@ -1171,6 +1171,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 return False
         warned = self.__dict__.setdefault("_completion_no_transport_warned", set())
         key = (getattr(source, "profile", None), platform) if source is not None else None
+        if adapter is None and source is not None and source.platform == Platform.LOCAL:
+            # The LOCAL adapter is registered lazily by restore_local_session inside
+            # restore_completion_route — which _inject_watch_notification calls AFTER this
+            # pre-flight. If the session can be restored here, its LOCAL adapter becomes
+            # available and delivery proceeds normally. Without this call, the adapter map
+            # for a served profile's DM is empty at pre-flight time, adapter stays None,
+            # and delivery_attempts never increments (#154230).
+            from gateway.session_local_recovery import restore_completion_route
+            restore_completion_route(self, str(evt.get("session_key") or ""))
+            adapter = self._resolve_injection_adapter(platform, source)
         if adapter is None:
             # The watcher requeues silently every tick; say once per outage which lane has no transport.
             if key is not None and key not in warned:
