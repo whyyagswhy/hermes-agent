@@ -748,6 +748,22 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+
+        # When a Nous/OAuth dashboard login made this submission, embed the per-login
+        # identity for audit attribution. principal_id stays as actor.subject
+        # (host_owner_subject()) for session ownership and deduplication continuity
+        # (PR #145598); auth_attribution_v1 is the per-verified-login audit trail.
+        from tui_gateway.transport import current_transport
+        from gateway.owner_identity import _login_provider
+        _ws_transport = current_transport()
+        _auth_id = getattr(_ws_transport, "auth_identity", None) or {}
+        _login_prov = str(_auth_id.get("provider") or "").strip()
+        _login_uid = _auth_id.get("user_id")
+        if _login_uid and _login_prov and _login_provider(_login_prov):
+            payload["auth_attribution_v1"] = {
+                "user_id": _login_uid,
+                "provider": _login_prov,
+            }
         def admit():
             try:
                 return admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
