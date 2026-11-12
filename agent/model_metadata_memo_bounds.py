@@ -34,3 +34,15 @@ def bound_codex_caches(cache_key: str) -> None:
     Caller holds ``MEMO_LOCK`` through its publish."""
     from agent import model_metadata as mm  # facade seam: tests swap the memo dicts there
     evict_oldest(mm._codex_oauth_context_cache, cache_key, lambda entry: entry[1], CODEX_CACHE_MAX, mm._codex_oauth_max_context_cache)
+
+def endpoint_memo_key(normalized: str, api_key: object) -> tuple[str, str]:
+    """In-process memo key for a ``/models`` probe.
+
+    Callable keys get a slot keyed by their object identity, isolated from the keyless
+    ``(url, "")`` slot so a keyless 401 cannot poison subsequent callable-key lookups.
+    """
+    from agent.credential_persistence import fingerprint_secret_value
+    # Callable keys: use object identity as slot key, isolated from the keyless ("") slot.
+    if callable(api_key):
+        return normalized, f"callable:{id(api_key)}"
+    return normalized, (fingerprint_secret_value(api_key) or "") if isinstance(api_key, str) else ""
