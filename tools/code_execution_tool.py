@@ -814,8 +814,26 @@ def execute_code(
 def _kill_process_group(proc, escalate: bool = False):
     """Kill the child and its whole process tree via agent.deadline.kill_process_tree: SIGTERM
     (killpg + psutil descendant sweep; ``taskkill /T /F`` on Windows, where sig is ignored); with
-    ``escalate=True`` wait 5s then SIGKILL survivors. Never raises — falls back to ``proc.kill()``."""
+    ``escalate=True`` wait 5s then SIGKILL survivors. Never raises — falls back to ``proc.kill()``.
+
+    After the leader exits on SIGTERM, group members that ignored or had not yet received the
+    signal (e.g. a subprocess spawned by user code that was mid-fork when killpg(SIGTERM) ran)
+    are orphaned and keep running (#154418).  An unconditional SIGKILL to the whole process
+    group once the leader is gone closes that gap -- matching _kill_process_group_posix in
+    tools/environments/local.py which the terminal tool uses.
+    """
+    import os as _os
     import signal as _signal
+    # Capture pgid before any signal: the leader may exit almost immediately on SIGTERM,
+    # making getpgid(proc.pid) raise ProcessLookupError when needed for the SIGKILL sweep.
+    _pgid: int | None = None
+    if _os.name == "posix":
+        try:
+            _pgid = _os.getpgid(proc.pid)
+            if _pgid != proc.pid:  # only sweep the kernel's own group
+                _pgid = None
+        except (ProcessLookupError, PermissionError, OSError):
+            _pgid = None
     def _tree_signal(sig) -> None:
         try:
             from agent.deadline import kill_process_tree
@@ -832,6 +850,13 @@ def _kill_process_group(proc, escalate: bool = False):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             _tree_signal(getattr(_signal, "SIGKILL", None))
+        # Sweep group members that survived SIGTERM (subprocesses spawned by user code).
+        # Use the pgid captured before the first signal; the leader is gone by now.
+        if _pgid is not None:
+            try:
+                _os.killpg(_pgid, getattr(_signal, "SIGKILL", _signal.SIGKILL))
+            except (ProcessLookupError, PermissionError, OSError):
+                pass  # group already empty -- normal when nothing escaped SIGTERM
 
 
 def _load_config() -> dict:
