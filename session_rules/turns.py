@@ -281,6 +281,11 @@ MAX_ITERATIONS_SUMMARY_REQUEST = (
     "summarizing what you've found and accomplished so far, without calling any more tools."
 )
 _BACKGROUND_PROCESS_NOTIFICATION_PREFIX = "[IMPORTANT: Background process "
+# Delegation completion notices reach the user role from the same producer family.
+_ASYNC_DELEGATION_NOTICE_PREFIX = "[ASYNC DELEGATION"
+# Machinery turns the runtime stamps on a row. Mirrors agent/turn_empty_response._MACHINERY_DISPLAY_KINDS;
+# kept local so session_rules does not import agent/. ``steer`` is absent: that is the person's own message.
+_MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "process_complete", "async_delegation_complete"})
 
 
 # Explicit end boundary: weak models otherwise read quoted headers as fresh
@@ -415,6 +420,8 @@ def _is_synthetic_compression_user_turn(message: Any) -> bool:
         return False
     if _is_context_summary_message(message):
         return True
+    if message.get("display_kind") in _MACHINERY_DISPLAY_KINDS:
+        return True
     text = _content_text_for_contains(message.get("content")).strip()
     return text in {
         COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
@@ -424,6 +431,7 @@ def _is_synthetic_compression_user_turn(message: Any) -> bool:
         _LENGTH_CONTINUATION_OUTPUT_LIMIT,
     } or text.startswith((
         _BACKGROUND_PROCESS_NOTIFICATION_PREFIX, TODO_INJECTION_HEADER + "\n", _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+        _ASYNC_DELEGATION_NOTICE_PREFIX,
     ))
 
 

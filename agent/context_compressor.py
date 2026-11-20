@@ -37,7 +37,7 @@ from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
 from agent.context_compressor_typed_input import TYPED_TURNS_POINTER, typed_summary_messages
-from agent.conversation_compression_scaffolding import is_user_role_scaffolding
+from agent.conversation_compression_scaffolding import is_runtime_machinery_row, is_user_role_scaffolding
 from agent.context_compressor_tail import (
     demote_stale_tail_tools, lean_tail_budget, is_demoted_stub, skill_view_names_by_call_id, tail_cut_pricer,
     elide_keeping_skill_safety_rule, with_skill_safety_rule, without_skill_safety_rule, tail_cut_progress_floor,
@@ -3953,17 +3953,14 @@ Write only the summary body. Do not include any preamble or prefix."""
     @classmethod
     def _transcript_has_real_user_turn(cls, messages: list[dict[str, Any]]) -> bool:
         """Return whether *messages* contain a user-authored (not synthetic summary) turn."""
-        return any(
-            isinstance(m, dict) and m.get("role") == "user" and not cls._is_synthetic_compression_user_turn(m)
-            for m in messages
-        )
+        return any(isinstance(m, dict) and m.get("role") == "user" and not cls._is_synthetic_compression_user_turn(m) and not is_user_role_scaffolding(m) for m in messages)
 
     @classmethod
     def _is_synthetic_compression_user_turn(cls, message: Any) -> bool:
         """Recognize internal user-role rows by content marker (SessionDB drops metadata)."""
         if not isinstance(message, dict) or message.get("role") != "user":
             return False
-        if cls._is_context_summary_message(message):
+        if cls._is_context_summary_message(message) or is_runtime_machinery_row(message):
             return True
         text = _content_text_for_contains(message.get("content")).strip()
         # Recovery nudges are scaffolding, not human turns; lazy import avoids an import cycle.
@@ -4029,8 +4026,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Infer a compact focus hint from the most recent real user turns."""
         candidates: list[str] = []
         for msg in reversed(messages):
-            # display_kind notices are operational traffic, not user intent.
-            if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
+            # Machinery cards are operational traffic; ``steer`` is the person's own message.
+            if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or is_runtime_machinery_row(msg):
                 continue
             text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
@@ -4057,7 +4054,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Reuse the runtime's real-user predicate so scaffolding rows can never anchor.
         from agent.conversation_compression import _is_real_user_message
         for msg in reversed(messages):
-            if msg.get("role") != "user" or not _is_real_user_message(msg):
+            if msg.get("role") != "user" or is_runtime_machinery_row(msg) or not _is_real_user_message(msg):
                 continue
             text = _redact_compaction_text(_typed_user_text(_content_text_for_contains(msg.get("content"))).strip())
             if not text:
